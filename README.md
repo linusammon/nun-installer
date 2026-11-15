@@ -70,6 +70,14 @@ so it downloads the system. Both need KVM.
 - `crates/installer-tui`: the `nun-installer` binary.
 - `nix/tests`: the VM tests.
 
+## Pinned inputs
+
+The installed system uses the same nixpkgs and disko this installer was built with.
+The installer writes the relevant part of its own `flake.lock` to `/etc/nixos`, so
+installs are reproducible and the inputs resolve from the Nix store without network
+access. `nix flake update` here changes what new installs get. The pin is skipped when
+`NUN_NIXPKGS_URL` or `NUN_DISKO_URL` are overridden.
+
 ## Environment
 
 The Nix package sets these; outside Nix (or in the devenv shell) they fall back
@@ -81,5 +89,6 @@ to system paths or must be set by hand:
 | `NUN_STATE_VERSION` | `system.stateVersion` for the new system (required) |
 | `NUN_NIXPKGS_PATH` | nixpkgs used to evaluate disko |
 | `NUN_NIXPKGS_URL`, `NUN_DISKO_URL` | flake inputs written into the generated flake |
+| `NUN_LOCK_FILE` | the installer's `flake.lock`, reduced to nixpkgs and disko and written to `/etc/nixos` |
 | `NUN_CKBCOMP`, `NUN_LOADKEYS` | tools that load the chosen keyboard layout into the console |
 | `NUN_OFFLINE=1` | the medium carries everything needed, so skip the internet check |

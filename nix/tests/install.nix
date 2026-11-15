@@ -7,8 +7,12 @@
   disko,
   nixpkgsSrc,
   nixpkgsNarHash,
+  nixpkgsRev,
   encrypt ? false,
   tui ? false,
+  # Use the default (GitHub) input URLs and rely on the pinned lock plus the
+  # sources already in the store, as an offline install would.
+  pinned ? false,
 }:
 let
   inherit (pkgs) lib;
@@ -44,10 +48,12 @@ let
 
   instrumentation = "${nixpkgsSrc}/nixos/modules/testing/test-instrumentation.nix";
 
-  env = lib.concatStringsSep " " [
-    "NUN_NIXPKGS_URL=path:${nixpkgsSrc}"
-    "NUN_DISKO_URL=path:${diskoSrc}"
-  ];
+  env = lib.optionalString (!pinned) (
+    lib.concatStringsSep " " [
+      "NUN_NIXPKGS_URL=path:${nixpkgsSrc}"
+      "NUN_DISKO_URL=path:${diskoSrc}"
+    ]
+  );
 
   # Mirrors what the installer generates. Nothing here is installed: building it
   # puts the closure of the target system and of the disko scripts into the
@@ -169,7 +175,7 @@ let
   targetBuild = target.config.system.build;
 in
 pkgs.testers.runNixOSTest {
-  name = "nun-installer-${if tui then "tui-" else ""}${if encrypt then "encrypted" else "plain"}";
+  name = "nun-installer-${if pinned then "pinned-" else ""}${if tui then "tui-" else ""}${if encrypt then "encrypted" else "plain"}";
 
   passthru = { inherit target; };
 
@@ -220,6 +226,10 @@ pkgs.testers.runNixOSTest {
           targetBuild.formatScript
           targetBuild.mountScript
         ]
+        ++ lib.optional pinned (
+          # The pinned lock names these store paths, so they must be present.
+          pkgs.writeText "pinned-inputs" "${nixpkgsSrc} ${diskoSrc}"
+        )
         ++ (with pkgs; [
           stdenv
           stdenvNoCC
@@ -368,10 +378,17 @@ pkgs.testers.runNixOSTest {
         with subtest("install"):
             installer.succeed("${env} nun-installer --config ${answersFile} --yes >&2")
 
+    pinned = ${if pinned then "True" else "False"}
+
     with subtest("generated config is in place"):
         for f in ["flake.nix", "configuration.nix", "disko.nix", "hardware-configuration.nix"]:
             installer.succeed(f"test -s /mnt/etc/nixos/{f}")
         installer.succeed("grep -q 'programs.umbriel.enable = true' /mnt/etc/nixos/configuration.nix")
+
+    if pinned:
+        with subtest("inputs are pinned to the ones the installer was built with"):
+            installer.succeed("grep -q '${nixpkgsRev}' /mnt/etc/nixos/flake.lock")
+            installer.succeed("grep -q nixos-unstable /mnt/etc/nixos/flake.nix")
 
     with subtest("password is set but not in the config"):
         installer.succeed("grep -Eq '^alice:[$][y6][$]' /mnt/etc/shadow")

@@ -35,7 +35,9 @@
             filter =
               path: type:
               (craneLib.filterCargoSources path type) || (lib.hasSuffix ".j2" path) || (lib.hasSuffix ".snap" path)
-              || (lib.hasInfix "/tests/fixtures/" path);
+              || (lib.hasInfix "/tests/fixtures/" path)
+              # A test checks that the repo's own lock reduces cleanly.
+              || (baseNameOf path == "flake.lock");
             name = "source";
           };
           commonArgs = {
@@ -70,6 +72,7 @@
                   --set-default NUN_NIXPKGS_PATH ${pkgs.path} \
                   --set-default NUN_CKBCOMP ${pkgs.ckbcomp}/bin/ckbcomp \
                   --set-default NUN_LOADKEYS ${pkgs.kbd}/bin/loadkeys \
+                  --set-default NUN_LOCK_FILE ${./flake.lock} \
                   --suffix PATH : ${pkgs.lib.makeBinPath [ disko.packages.${system}.disko ]}
               '';
               meta.mainProgram = "nun-installer";
@@ -126,6 +129,7 @@
             inherit disko;
             nixpkgsSrc = nixpkgs.outPath;
             nixpkgsNarHash = nixpkgs.narHash;
+            nixpkgsRev = nixpkgs.rev;
           };
           vm-install-encrypted = import ./nix/tests/install.nix {
             inherit pkgs;
@@ -133,7 +137,17 @@
             inherit disko;
             nixpkgsSrc = nixpkgs.outPath;
             nixpkgsNarHash = nixpkgs.narHash;
+            nixpkgsRev = nixpkgs.rev;
             encrypt = true;
+          };
+          vm-install-pinned = import ./nix/tests/install.nix {
+            inherit pkgs;
+            inherit (self.packages.${system}) installer;
+            inherit disko;
+            nixpkgsSrc = nixpkgs.outPath;
+            nixpkgsNarHash = nixpkgs.narHash;
+            nixpkgsRev = nixpkgs.rev;
+            pinned = true;
           };
           vm-install-tui = import ./nix/tests/install.nix {
             inherit pkgs;
@@ -141,6 +155,7 @@
             inherit disko;
             nixpkgsSrc = nixpkgs.outPath;
             nixpkgsNarHash = nixpkgs.narHash;
+            nixpkgsRev = nixpkgs.rev;
             encrypt = true;
             tui = true;
           };
