@@ -7,6 +7,7 @@
     NUN_LOCALE_SUPPORTED = "${pkgs.glibcLocales}/share/i18n/SUPPORTED";
     NUN_XKB_BASE_LST = "${pkgs.xkeyboard-config}/share/X11/xkb/rules/base.lst";
     NUN_STATE_VERSION = pkgs.lib.trivial.release;
+    NUN_NIXPKGS_PATH = "${pkgs.path}";
   };
 
   packages = with pkgs; [

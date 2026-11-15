@@ -113,7 +113,7 @@ let
                   {
                     type = "luks";
                     name = "cryptroot";
-                    passwordFile = "/tmp/nun-luks-password";
+                    passwordFile = "/run/nun-installer/luks-password";
                     settings.allowDiscards = true;
                     content = btrfs;
                   }
@@ -190,7 +190,6 @@ pkgs.testers.runNixOSTest {
       };
 
       nix = {
-        nixPath = [ "nixpkgs=${nixpkgsSrc}" ];
         settings = {
           experimental-features = [
             "nix-command"
@@ -302,8 +301,8 @@ pkgs.testers.runNixOSTest {
         installer.succeed("nixos-enter --root /mnt -c 'id -nG alice' | grep -qw wheel")
 
     with subtest("secrets are cleaned up"):
-        installer.fail("test -e /tmp/nun-luks-password")
-        installer.fail("test -e /tmp/nun-installer")
+        installer.fail("test -e /run/nun-installer/luks-password")
+        installer.fail("test -e /run/nun-installer")
 
     with subtest("bootloader is installed"):
         installer.succeed("test -e /mnt/boot/EFI/BOOT/BOOTX64.EFI")
