@@ -53,7 +53,7 @@ subvolumes = {
 {% if encrypt %}
             type = "luks";
             name = "cryptroot";
-            passwordFile = "/tmp/nun-luks-password";
+            passwordFile = {{ luks_password_path | nix }};
             settings.allowDiscards = true;
             content = {
               {{ btrfs() | indent(14) }}

@@ -4,6 +4,9 @@ use minijinja::{context, Environment, Value};
 /// Default nixpkgs ref written into the generated flake.
 pub const NIXPKGS_URL: &str = "github:NixOS/nixpkgs/nixos-unstable";
 
+/// Where the LUKS passphrase is staged for disko. Removed again after install.
+pub const LUKS_PASSWORD_PATH: &str = "/tmp/nun-luks-password";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Boot {
     Uefi,
@@ -66,6 +69,7 @@ pub fn render(a: &Answers, host: &Host) -> Result<GeneratedFiles, RenderError> {
     let env = env();
     let ctx = context! {
         nixpkgs_url => NIXPKGS_URL,
+        luks_password_path => LUKS_PASSWORD_PATH,
         system => &host.system,
         state_version => &host.state_version,
         uefi => host.boot == Boot::Uefi,
