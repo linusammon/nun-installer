@@ -31,7 +31,7 @@ pub use network::{
     WifiNetwork,
 };
 pub use password::{hash_password, HashError};
-pub use plan::{build_plan, Action, ActionKind, Command, Content, Plan};
+pub use plan::{build_plan, Action, ActionKind, Command, Content, Plan, PlanError};
 pub use safety::{check_disk, SafetyError};
 pub use secret::Secret;
 pub use tools::{missing_tools, missing_tools_in, REQUIRED_TOOLS};

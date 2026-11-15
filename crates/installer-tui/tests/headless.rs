@@ -56,7 +56,7 @@ fn invalid_answers_are_reported_per_field() {
     let out = run(&["--config", bad.to_str().unwrap(), "--dry-run"]);
     std::fs::remove_dir_all(&dir).unwrap();
     assert_eq!(out.status.code(), Some(1));
-    assert!(text(&out.stderr).contains("Timezone"));
+    assert!(text(&out.stderr).contains("timezone"));
 }
 
 #[test]

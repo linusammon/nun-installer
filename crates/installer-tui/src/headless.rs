@@ -18,7 +18,7 @@ pub fn run(config: &Path, dry_run: bool, yes: bool) -> Result<(), String> {
     if !errors.is_empty() {
         let list: Vec<_> = errors
             .iter()
-            .map(|e| format!("  {:?}: {}", e.field, e.message))
+            .map(|e| format!("  {}: {}", e.field, e.message))
             .collect();
         return Err(format!("invalid answers:\n{}", list.join("\n")));
     }
@@ -55,7 +55,7 @@ pub fn run(config: &Path, dry_run: bool, yes: bool) -> Result<(), String> {
         }
     }
     let files = render(&answers, &host).map_err(|e| e.to_string())?;
-    let plan = build_plan(&answers, &files, &host);
+    let plan = build_plan(&answers, &files, &host).map_err(|e| e.to_string())?;
     let total = plan.actions.len();
 
     if dry_run {

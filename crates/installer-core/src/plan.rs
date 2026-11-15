@@ -148,7 +148,14 @@ fn write(description: &str, path: String, content: &str) -> Action {
 
 /// Build the full install plan. Answers must already be validated and
 /// the files rendered from them.
-pub fn build_plan(a: &Answers, files: &GeneratedFiles, host: &Host) -> Plan {
+/// Why a plan could not be built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum PlanError {
+    #[error("encryption is on but there is no passphrase")]
+    MissingPassphrase,
+}
+
+pub fn build_plan(a: &Answers, files: &GeneratedFiles, host: &Host) -> Result<Plan, PlanError> {
     let mut actions = Vec::new();
     let staged_disko = format!("{STAGING_DIR}/disko.nix");
 
@@ -161,11 +168,13 @@ pub fn build_plan(a: &Answers, files: &GeneratedFiles, host: &Host) -> Plan {
     ));
 
     if a.disk.encrypt {
+        // An empty passphrase would silently encrypt the disk with nothing, so a
+        // missing one is an error even though validation already catches it.
         let password = a
             .disk
             .encryption_password
             .clone()
-            .unwrap_or_else(|| Secret::new(""));
+            .ok_or(PlanError::MissingPassphrase)?;
         actions.push(action(
             "Stage LUKS passphrase for disko",
             ActionKind::WriteFile {
@@ -278,14 +287,8 @@ pub fn build_plan(a: &Answers, files: &GeneratedFiles, host: &Host) -> Plan {
         kind: ActionKind::Remove(STAGING_DIR.into()),
         cleanup: true,
     });
-    if a.disk.encrypt {
-        actions.push(Action {
-            description: "Remove staged LUKS passphrase".into(),
-            kind: ActionKind::Remove(LUKS_PASSWORD_PATH.into()),
-            cleanup: true,
-        });
-    }
-    Plan { actions }
+    // The passphrase file lives inside the staging directory, so this removes it too.
+    Ok(Plan { actions })
 }
 
 impl fmt::Display for Plan {
@@ -336,7 +339,7 @@ mod tests {
             nixpkgs_path: Some("/nix/store/fake-nixpkgs".into()),
             pinned_lock: None,
         };
-        build_plan(a, &render(a, &host).unwrap(), &host)
+        build_plan(a, &render(a, &host).unwrap(), &host).unwrap()
     }
 
     fn descriptions(p: &Plan) -> Vec<&str> {
@@ -365,12 +368,41 @@ mod tests {
     }
 
     #[test]
-    fn encrypted_plan_stages_and_removes_passphrase() {
+    fn encrypted_plan_stages_the_passphrase_inside_the_directory_that_cleanup_removes() {
         let p = plan_for(&answers(true));
         assert_eq!(p.actions[1].description, "Stage LUKS passphrase for disko");
         let last = p.actions.last().unwrap();
         assert!(last.cleanup);
-        assert_eq!(last.kind, ActionKind::Remove(LUKS_PASSWORD_PATH.into()));
+        assert_eq!(last.kind, ActionKind::Remove(STAGING_DIR.into()));
+        assert!(
+            LUKS_PASSWORD_PATH.starts_with(STAGING_DIR),
+            "the passphrase must be inside the directory that cleanup removes"
+        );
+        assert_eq!(
+            p.actions.iter().filter(|a| a.cleanup).count(),
+            1,
+            "one cleanup action covers everything"
+        );
+    }
+
+    #[test]
+    fn encryption_without_a_passphrase_is_an_error_not_an_empty_passphrase() {
+        let mut a = answers(true);
+        a.disk.encryption_password = None;
+        let host = Host {
+            boot: Boot::Uefi,
+            system: "x86_64-linux".into(),
+            state_version: "26.05".into(),
+            nixpkgs_url: NIXPKGS_URL.into(),
+            disko_url: DISKO_URL.into(),
+            nixpkgs_path: None,
+            pinned_lock: None,
+        };
+        let files = render(&a, &host).unwrap();
+        assert_eq!(
+            build_plan(&a, &files, &host).unwrap_err(),
+            PlanError::MissingPassphrase
+        );
     }
 
     #[test]
@@ -395,7 +427,7 @@ mod tests {
             pinned_lock: Some("{\"pinned\": true}\n".into()),
         };
         mutate(&mut host);
-        build_plan(&a, &render(&a, &host).unwrap(), &host)
+        build_plan(&a, &render(&a, &host).unwrap(), &host).unwrap()
     }
 
     #[test]

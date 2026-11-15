@@ -936,11 +936,17 @@ impl App {
         let answers = self.answers();
         let errors = validate(&answers, &self.catalog);
         if let Some(e) = errors.first() {
-            self.fail(Target::Confirm, format!("{:?}: {}", e.field, e.message));
+            self.fail(Target::Confirm, format!("{}: {}", e.field, e.message));
             return None;
         }
         let plan = match render(&answers, &self.host) {
-            Ok(files) => build_plan(&answers, &files, &self.host),
+            Ok(files) => match build_plan(&answers, &files, &self.host) {
+                Ok(plan) => plan,
+                Err(e) => {
+                    self.fail(Target::Confirm, e.to_string());
+                    return None;
+                }
+            },
             Err(e) => {
                 self.fail(Target::Confirm, e.to_string());
                 return None;

@@ -18,6 +18,24 @@ pub enum Field {
     KeyboardVariant,
 }
 
+impl std::fmt::Display for Field {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Field::SchemaVersion => "schema version",
+            Field::DiskDevice => "disk",
+            Field::SwapSize => "swap size",
+            Field::EncryptionPassword => "encryption passphrase",
+            Field::UserName => "username",
+            Field::UserPasswordHash => "password",
+            Field::Hostname => "hostname",
+            Field::Locale => "language",
+            Field::Timezone => "timezone",
+            Field::KeyboardLayout => "keyboard layout",
+            Field::KeyboardVariant => "keyboard variant",
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{message}")]
 pub struct ValidationError {
@@ -210,6 +228,18 @@ mod tests {
             .into_iter()
             .map(|e| e.field)
             .collect()
+    }
+
+    #[test]
+    fn fields_have_readable_names() {
+        assert_eq!(Field::UserPasswordHash.to_string(), "password");
+        assert_eq!(
+            Field::EncryptionPassword.to_string(),
+            "encryption passphrase"
+        );
+        assert!(!Field::KeyboardVariant
+            .to_string()
+            .contains(char::is_uppercase));
     }
 
     #[test]
