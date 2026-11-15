@@ -47,9 +47,7 @@ pub struct CatalogPaths {
 
 impl CatalogPaths {
     pub fn from_env() -> Self {
-        let get = |var: &str, default: &str| {
-            std::env::var_os(var).map_or_else(|| PathBuf::from(default), PathBuf::from)
-        };
+        let get = crate::proc::env_path;
         Self {
             zone_tab: get("NUN_ZONE_TAB", "/usr/share/zoneinfo/zone.tab"),
             locales_supported: get("NUN_LOCALE_SUPPORTED", "/usr/share/i18n/SUPPORTED"),

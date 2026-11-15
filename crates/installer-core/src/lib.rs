@@ -11,6 +11,7 @@ pub mod lock;
 pub mod network;
 pub mod password;
 pub mod plan;
+mod proc;
 pub mod safety;
 pub mod secret;
 pub mod tools;

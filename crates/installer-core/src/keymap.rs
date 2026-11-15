@@ -3,9 +3,9 @@
 //! `console.useXkbConfig` uses: `ckbcomp` converts an XKB layout to a console
 //! keymap and `loadkeys` loads it.
 
-use std::io::Write;
+use crate::proc::output_with_stdin;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 #[derive(Debug, thiserror::Error)]
 pub enum KeymapError {
@@ -34,9 +34,7 @@ fn xkb_dir_from_base_lst(base_lst: &std::path::Path) -> Option<PathBuf> {
 
 impl KeymapTools {
     pub fn from_env() -> Self {
-        let var = |name: &str, default: &str| {
-            std::env::var_os(name).map_or_else(|| PathBuf::from(default), PathBuf::from)
-        };
+        let var = crate::proc::env_path;
         let xkb_dir = std::env::var_os("NUN_XKB_BASE_LST")
             .and_then(|p| xkb_dir_from_base_lst(std::path::Path::new(&p)));
         Self {
@@ -48,14 +46,9 @@ impl KeymapTools {
 }
 
 fn run_error(program: &std::path::Path, out: &std::process::Output) -> KeymapError {
-    let message = String::from_utf8_lossy(&out.stderr).trim().to_owned();
     KeymapError::Failed {
         program: program.display().to_string(),
-        message: if message.is_empty() {
-            out.status.to_string()
-        } else {
-            message
-        },
+        message: crate::proc::failure_message(out),
     }
 }
 
@@ -83,26 +76,15 @@ pub fn apply_console_keymap(
         return Err(run_error(&tools.ckbcomp, &keymap));
     }
 
-    let mut loadkeys = Command::new(&tools.loadkeys)
-        .args(["-u", "-q", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|source| KeymapError::Spawn {
-            program: tools.loadkeys.display().to_string(),
-            source,
-        })?;
-    if let Some(mut stdin) = loadkeys.stdin.take() {
-        // loadkeys may exit early on a bad console; its status tells us why.
-        let _ = stdin.write_all(&keymap.stdout);
-    }
-    let out = loadkeys
-        .wait_with_output()
-        .map_err(|source| KeymapError::Spawn {
-            program: tools.loadkeys.display().to_string(),
-            source,
-        })?;
+    // loadkeys may exit early on a bad console; its status tells us why.
+    let out = output_with_stdin(
+        Command::new(&tools.loadkeys).args(["-u", "-q", "-"]),
+        &keymap.stdout,
+    )
+    .map_err(|source| KeymapError::Spawn {
+        program: tools.loadkeys.display().to_string(),
+        source,
+    })?;
     if out.status.success() {
         Ok(())
     } else {
