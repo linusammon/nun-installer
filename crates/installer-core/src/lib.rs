@@ -1,7 +1,7 @@
 //! Core logic for the nun installer: answers -> generated config + install plan.
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_builds() {}
-}
+pub mod answers;
+pub mod validate;
+
+pub use answers::{Answers, Disk, Filesystem, Nun, System, User, SCHEMA_VERSION};
+pub use validate::{validate, Field, ValidationError};

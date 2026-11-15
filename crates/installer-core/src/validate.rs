@@ -1,0 +1,292 @@
+use crate::answers::{Answers, SCHEMA_VERSION};
+
+/// Which answer a validation error belongs to, so the TUI can show it per field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Field {
+    SchemaVersion,
+    DiskDevice,
+    UserName,
+    UserPasswordHash,
+    Hostname,
+    Locale,
+    Timezone,
+    KeyboardLayout,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{message}")]
+pub struct ValidationError {
+    pub field: Field,
+    pub message: String,
+}
+
+fn err(field: Field, message: impl Into<String>) -> ValidationError {
+    ValidationError {
+        field,
+        message: message.into(),
+    }
+}
+
+/// Pure validation of answers. Checks that need the live system (disk exists,
+/// is not mounted, ...) belong to the safety checks, not here.
+pub fn validate(a: &Answers) -> Vec<ValidationError> {
+    let mut errs = Vec::new();
+
+    if a.schema_version != SCHEMA_VERSION {
+        errs.push(err(
+            Field::SchemaVersion,
+            format!(
+                "unsupported schema version {} (expected {SCHEMA_VERSION})",
+                a.schema_version
+            ),
+        ));
+    }
+    if let Err(m) = check_device(&a.disk.device) {
+        errs.push(err(Field::DiskDevice, m));
+    }
+    if let Err(m) = check_username(&a.user.name) {
+        errs.push(err(Field::UserName, m));
+    }
+    if let Err(m) = check_password_hash(&a.user.password_hash) {
+        errs.push(err(Field::UserPasswordHash, m));
+    }
+    if let Err(m) = check_hostname(&a.system.hostname) {
+        errs.push(err(Field::Hostname, m));
+    }
+    if let Err(m) = check_locale(&a.system.locale) {
+        errs.push(err(Field::Locale, m));
+    }
+    if let Err(m) = check_timezone(&a.system.timezone) {
+        errs.push(err(Field::Timezone, m));
+    }
+    if let Err(m) = check_keyboard(&a.system.keyboard_layout) {
+        errs.push(err(Field::KeyboardLayout, m));
+    }
+    errs
+}
+
+fn check_device(d: &str) -> Result<(), String> {
+    let name = d
+        .strip_prefix("/dev/")
+        .ok_or("must be a path under /dev/")?;
+    if name.is_empty()
+        || name.contains("..")
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_'))
+    {
+        return Err("invalid device path".into());
+    }
+    Ok(())
+}
+
+fn check_username(n: &str) -> Result<(), String> {
+    const RESERVED: &[&str] = &["root", "nobody", "nixbld"];
+    if n.is_empty() || n.len() > 32 {
+        return Err("must be 1-32 characters".into());
+    }
+    let mut chars = n.chars();
+    let first = chars.next().unwrap_or_default();
+    if !(first.is_ascii_lowercase() || first == '_') {
+        return Err("must start with a lowercase letter or underscore".into());
+    }
+    if !chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '-')) {
+        return Err("may only contain a-z, 0-9, '_' and '-'".into());
+    }
+    if RESERVED.contains(&n) {
+        return Err(format!("'{n}' is reserved"));
+    }
+    Ok(())
+}
+
+fn check_password_hash(h: &str) -> Result<(), String> {
+    const PREFIXES: &[&str] = &["$y$", "$6$", "$5$", "$2b$"];
+    if !PREFIXES.iter().any(|p| h.starts_with(p)) {
+        return Err("must be a crypt hash (yescrypt, sha512, sha256 or bcrypt)".into());
+    }
+    if h.chars()
+        .any(|c| c.is_whitespace() || c == '"' || c == '\\')
+    {
+        return Err("contains invalid characters".into());
+    }
+    Ok(())
+}
+
+/// RFC 1123 hostname: labels of 1-63 alphanumerics/hyphens, no leading/trailing hyphen.
+fn check_hostname(h: &str) -> Result<(), String> {
+    if h.is_empty() || h.len() > 253 {
+        return Err("must be 1-253 characters".into());
+    }
+    for label in h.split('.') {
+        if label.is_empty() || label.len() > 63 {
+            return Err("each label must be 1-63 characters".into());
+        }
+        if label.starts_with('-') || label.ends_with('-') {
+            return Err("labels must not start or end with '-'".into());
+        }
+        if !label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Err("may only contain a-z, A-Z, 0-9 and '-'".into());
+        }
+    }
+    Ok(())
+}
+
+/// Shape check only: `lang_COUNTRY[.charset][@modifier]`, e.g. `en_US.UTF-8`.
+fn check_locale(l: &str) -> Result<(), String> {
+    let (lang, rest) = l.split_once('_').ok_or("expected form like en_US.UTF-8")?;
+    let country: String = rest.chars().take_while(char::is_ascii_alphabetic).collect();
+    let tail = &rest[country.len()..];
+    let lang_ok = (2..=3).contains(&lang.len()) && lang.chars().all(|c| c.is_ascii_lowercase());
+    let country_ok = country.len() == 2 && country.chars().all(|c| c.is_ascii_uppercase());
+    let tail_ok = tail
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '@' | '_'));
+    if lang_ok && country_ok && tail_ok {
+        Ok(())
+    } else {
+        Err("expected form like en_US.UTF-8".into())
+    }
+}
+
+/// Shape check only: `Area/Location` (or `UTC`). Existence is checked against tzdata at runtime.
+fn check_timezone(t: &str) -> Result<(), String> {
+    if t == "UTC" {
+        return Ok(());
+    }
+    let parts: Vec<&str> = t.split('/').collect();
+    let ok = (2..=3).contains(&parts.len())
+        && parts.iter().all(|p| {
+            !p.is_empty()
+                && p.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '+'))
+        });
+    if ok {
+        Ok(())
+    } else {
+        Err("expected form like Europe/Berlin".into())
+    }
+}
+
+fn check_keyboard(k: &str) -> Result<(), String> {
+    if !k.is_empty()
+        && k.len() <= 16
+        && k.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    {
+        Ok(())
+    } else {
+        Err("expected an XKB layout like us or de".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::answers::*;
+
+    fn good() -> Answers {
+        Answers {
+            schema_version: SCHEMA_VERSION,
+            disk: Disk {
+                device: "/dev/nvme0n1".into(),
+                filesystem: Filesystem::Ext4,
+            },
+            user: User {
+                name: "alice".into(),
+                password_hash: "$y$j9T$abc$def".into(),
+                sudo: true,
+            },
+            system: System {
+                hostname: "nun-box".into(),
+                locale: "en_US.UTF-8".into(),
+                timezone: "Europe/Berlin".into(),
+                keyboard_layout: "de".into(),
+            },
+            nun: Nun::default(),
+        }
+    }
+
+    fn fields(a: &Answers) -> Vec<Field> {
+        validate(a).into_iter().map(|e| e.field).collect()
+    }
+
+    #[test]
+    fn good_answers_pass() {
+        assert!(validate(&good()).is_empty());
+    }
+
+    #[test]
+    fn bad_schema_version() {
+        let mut a = good();
+        a.schema_version = 99;
+        assert_eq!(fields(&a), [Field::SchemaVersion]);
+    }
+
+    #[test]
+    fn bad_device() {
+        for d in ["sda", "/dev/", "/dev/../etc/passwd", "/dev/sd a"] {
+            let mut a = good();
+            a.disk.device = d.into();
+            assert_eq!(fields(&a), [Field::DiskDevice], "{d}");
+        }
+    }
+
+    #[test]
+    fn bad_usernames() {
+        for n in ["", "Alice", "1bob", "root", "a b", &"a".repeat(33)] {
+            let mut a = good();
+            a.user.name = n.into();
+            assert_eq!(fields(&a), [Field::UserName], "{n}");
+        }
+    }
+
+    #[test]
+    fn bad_password_hash() {
+        for h in ["hunter2", "$y$ a", ""] {
+            let mut a = good();
+            a.user.password_hash = h.into();
+            assert_eq!(fields(&a), [Field::UserPasswordHash], "{h}");
+        }
+    }
+
+    #[test]
+    fn hostnames() {
+        for h in ["", "-a", "a-", "a_b", "a..b", &"a".repeat(64)] {
+            let mut a = good();
+            a.system.hostname = h.into();
+            assert_eq!(fields(&a), [Field::Hostname], "{h}");
+        }
+        let mut a = good();
+        a.system.hostname = "box.example.org".into();
+        assert!(validate(&a).is_empty());
+    }
+
+    #[test]
+    fn locales() {
+        for l in ["", "en", "EN_us", "en_US utf8"] {
+            let mut a = good();
+            a.system.locale = l.into();
+            assert_eq!(fields(&a), [Field::Locale], "{l}");
+        }
+    }
+
+    #[test]
+    fn timezones() {
+        for t in ["", "Berlin", "Europe//Berlin", "../etc"] {
+            let mut a = good();
+            a.system.timezone = t.into();
+            assert_eq!(fields(&a), [Field::Timezone], "{t}");
+        }
+        let mut a = good();
+        a.system.timezone = "UTC".into();
+        assert!(validate(&a).is_empty());
+    }
+
+    #[test]
+    fn collects_multiple_errors() {
+        let mut a = good();
+        a.system.hostname = "".into();
+        a.user.name = "".into();
+        assert_eq!(fields(&a), [Field::UserName, Field::Hostname]);
+    }
+}
