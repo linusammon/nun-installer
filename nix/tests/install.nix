@@ -207,6 +207,7 @@ pkgs.testers.runNixOSTest {
         disko.packages.${system}.disko
         pkgs.cryptsetup
         pkgs.tmux
+        pkgs.kbd
       ];
 
       # No network: everything nixos-install and disko build must already be here.
@@ -294,27 +295,29 @@ pkgs.testers.runNixOSTest {
 
     if tui:
         with subtest("interactive install"):
-            installer.succeed("tmux new-session -d -x 120 -y 40 -s nun '${env} nun-installer'")
-            wait_for("Welcome")
+            # No network in the VM, so say the install medium carries everything.
+            installer.succeed("tmux new-session -d -x 120 -y 40 -s nun 'NUN_OFFLINE=1 ${env} nun-installer'")
+            wait_for("Press Enter to continue.")
             send("Enter")
 
-            wait_for("Timezone")
+            wait_for("Timezone —")
             type_text("Europe/Berlin")
             send("Enter")
 
-            wait_for("Language")
+            wait_for("Language —")
             send("Enter")
 
-            wait_for("Keyboard layout")
+            wait_for("Layout —")
             type_text("switzerland")
             send("Enter")
-
-            wait_for("Keyboard variant")
+            # The layout has variants, so Enter moved on to the variant list.
+            wait_for("Variant of \"German (Switzerland)\"")
             type_text("french")
             send("Enter")
 
-            wait_for("Choose the disk")
+            wait_for("Disk — choose")
             installer.succeed("tmux capture-pane -pt nun | grep -q 'unavailable'")  # the installer's own disk
+            installer.succeed("tmux capture-pane -pt nun >&2")
             send("Enter")
 
             wait_for("Swap size")
@@ -327,7 +330,7 @@ pkgs.testers.runNixOSTest {
                 type_text("${encryptionPassword}")
             send("Enter")
 
-            wait_for("User account")
+            wait_for("Confirm password")
             type_text("alice")
             send("Tab")
             type_text("hunter2hunter2")
@@ -335,7 +338,7 @@ pkgs.testers.runNixOSTest {
             type_text("hunter2hunter2")
             send("Enter")
 
-            wait_for("Hostname")
+            wait_for("Hostname —")
             send("BSpace BSpace BSpace")
             type_text("nun-test")
             send("Enter")
@@ -344,8 +347,13 @@ pkgs.testers.runNixOSTest {
             type_text("vda")
             send("Enter")
 
-            wait_for("Installation finished")
+            wait_for("Installation complete")
             send("q")
+
+        with subtest("the chosen keyboard layout was loaded into the console"):
+            # Swiss French puts é where German has ö; the default US map has neither.
+            installer.succeed("dumpkeys | grep -E '^keycode +39 =' >&2")
+            installer.succeed("dumpkeys | grep -E '^keycode +39 =' | grep -q eacute")
     else:
         with subtest("dry run touches nothing"):
             installer.succeed("${env} nun-installer --config ${answersFile} --dry-run >&2")
