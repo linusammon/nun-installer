@@ -1,8 +1,11 @@
-use installer_core::{
-    build_plan, check_disk, render, run_plan, validate, Answers, Catalog, CatalogPaths, DryRun,
-    Host, Live,
-};
-use std::io::Write;
+mod app;
+mod headless;
+mod install;
+mod tui;
+mod ui;
+mod widgets;
+
+use installer_core::{Catalog, CatalogPaths, Host};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -65,57 +68,16 @@ fn usage_error(msg: &str) -> Parsed {
     Parsed::Exit(ExitCode::from(2))
 }
 
-fn headless(config: &PathBuf, dry_run: bool, yes: bool) -> Result<(), String> {
-    let text = std::fs::read_to_string(config)
-        .map_err(|e| format!("cannot read {}: {e}", config.display()))?;
-    let answers: Answers = serde_json::from_str(&text)
-        .map_err(|e| format!("invalid answers file {}: {e}", config.display()))?;
-
+fn interactive() -> Result<(), String> {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return Err(
+            "the interactive installer needs a terminal (use --config for headless)".into(),
+        );
+    }
     let catalog = Catalog::load(&CatalogPaths::from_env()).map_err(|e| e.to_string())?;
-    let errors = validate(&answers, &catalog);
-    if !errors.is_empty() {
-        let list: Vec<_> = errors
-            .iter()
-            .map(|e| format!("  {:?}: {}", e.field, e.message))
-            .collect();
-        return Err(format!("invalid answers:\n{}", list.join("\n")));
-    }
-
-    if !dry_run && !yes {
-        return Err(format!(
-            "refusing to wipe {} without --yes (use --dry-run to preview)",
-            answers.disk.device
-        ));
-    }
-
-    let problems = check_disk(&answers.disk.device);
-    if dry_run {
-        for p in &problems {
-            eprintln!("warning: {p}");
-        }
-    } else if !problems.is_empty() {
-        let list: Vec<_> = problems.iter().map(|p| format!("  {p}")).collect();
-        return Err(format!("unsafe target disk:\n{}", list.join("\n")));
-    }
-
     let host = Host::detect().map_err(|e| e.to_string())?;
-    let files = render(&answers, &host).map_err(|e| e.to_string())?;
-    let plan = build_plan(&answers, &files, &host);
-
-    if dry_run {
-        let mut executor = DryRun(std::io::stdout());
-        let total = plan.actions.len();
-        run_plan(&plan, &mut executor, |i, _| {
-            let _ = writeln!(std::io::stdout(), "[{}/{total}]", i + 1);
-        })
-        .map_err(|e| e.to_string())
-    } else {
-        let total = plan.actions.len();
-        run_plan(&plan, &mut Live::stderr(), |i, a| {
-            eprintln!("[{}/{total}] {}", i + 1, a.description);
-        })
-        .map_err(|e| e.to_string())
-    }
+    tui::run(catalog, host).map_err(|e| e.to_string())
 }
 
 fn main() -> ExitCode {
@@ -123,11 +85,11 @@ fn main() -> ExitCode {
         Parsed::Run(a) => a,
         Parsed::Exit(code) => return code,
     };
-    let Some(config) = &args.config else {
-        eprintln!("error: the interactive installer is not implemented yet, use --config");
-        return ExitCode::from(2);
+    let result = match &args.config {
+        Some(config) => headless::run(config, args.dry_run, args.yes),
+        None => interactive(),
     };
-    match headless(config, args.dry_run, args.yes) {
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(msg) => {
             eprintln!("error: {msg}");

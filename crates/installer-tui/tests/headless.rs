@@ -63,5 +63,11 @@ fn invalid_answers_are_reported_per_field() {
 fn usage_errors_exit_2() {
     assert_eq!(run(&["--dry-run"]).status.code(), Some(2));
     assert_eq!(run(&["--bogus"]).status.code(), Some(2));
-    assert_eq!(run(&[]).status.code(), Some(2));
+}
+
+#[test]
+fn interactive_mode_needs_a_terminal() {
+    let out = run(&[]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(text(&out.stderr).contains("needs a terminal"));
 }

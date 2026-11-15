@@ -13,6 +13,7 @@ installer-core.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 serde_json.workspace = true
+zeroize.workspace = true
 
 [lints]
 workspace = true
