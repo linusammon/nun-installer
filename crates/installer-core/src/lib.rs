@@ -2,6 +2,7 @@
 
 pub mod answers;
 pub mod catalog;
+pub mod checks;
 pub mod disks;
 pub mod exec;
 pub mod generate;
@@ -15,6 +16,7 @@ pub mod validate;
 
 pub use answers::{Answers, Disk, System, User, SCHEMA_VERSION};
 pub use catalog::{Catalog, CatalogError, CatalogPaths, Layout, Variant};
+pub use checks::{clock_note, on_ac_power, system_clock_note, system_on_ac_power};
 pub use disks::{human_size, list_disks, DiskInfo};
 pub use exec::{run_plan, DryRun, ExecError, Executor, Live};
 pub use generate::{
