@@ -4,7 +4,7 @@
 //! at the bottom right, borderless pages, and bordered widgets that turn
 //! yellow when focused and show their own error in the bottom border.
 
-use crate::app::{App, DiskField, Pane, Screen, StepStatus, Target, UserField, BAR};
+use crate::app::{App, DiskField, Pane, Screen, StepStatus, Target, UserField, STEPS};
 use crate::widgets::{FilterList, TextInput};
 use installer_core::{human_size, DiskInfo};
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -72,11 +72,11 @@ fn middle_row(area: Rect) -> Rect {
 }
 
 fn step_bar(frame: &mut Frame, area: Rect, app: &App) {
-    let current = app.screen.bar_index();
-    let width: usize = BAR.iter().map(|(l, _)| l.chars().count() + 3).sum();
+    let current = app.screen.step();
+    let width: usize = STEPS.iter().map(|(_, l)| l.chars().count() + 3).sum();
     let line = if width <= area.width as usize {
         let mut spans = Vec::new();
-        for (i, (label, _)) in BAR.iter().enumerate() {
+        for (i, (_, label)) in STEPS.iter().enumerate() {
             let style = if i == current {
                 Style::new().fg(Color::White).bg(ACCENT_BG)
             } else {
@@ -90,10 +90,10 @@ fn step_bar(frame: &mut Frame, area: Rect, app: &App) {
         // Too narrow for every step: show only where we are.
         Line::from(vec![
             Span::styled(
-                format!(" {} ", BAR[current].0),
+                format!(" {} ", STEPS[current].1),
                 Style::new().fg(Color::White).bg(ACCENT_BG),
             ),
-            Span::styled(format!("  step {} of {}", current + 1, BAR.len()), DIM),
+            Span::styled(format!("  step {} of {}", current + 1, STEPS.len()), DIM),
         ])
     };
     frame.render_widget(Paragraph::new(line).alignment(Alignment::Center), area);
@@ -271,15 +271,24 @@ fn pick_list(
 
 // ---- screens ----
 
-/// `[OK] Label`, one line per check. `kind` is OK, FAIL, WARN or `--`.
-fn status(kind: &str, label: &str) -> Line<'static> {
-    let style = match kind {
-        "OK" => OK,
-        "FAIL" => FAIL,
-        "WARN" => WARN,
-        _ => DIM,
+#[derive(Clone, Copy)]
+enum Status {
+    Ok,
+    Fail,
+    Warn,
+    /// Not applicable, for example the internet check in offline mode.
+    Off,
+}
+
+/// `[OK] Label`, one line per check.
+fn status(kind: Status, label: &str) -> Line<'static> {
+    let (tag, style) = match kind {
+        Status::Ok => ("OK", OK),
+        Status::Fail => ("FAIL", FAIL),
+        Status::Warn => ("WARN", WARN),
+        Status::Off => ("--", DIM),
     };
-    Line::styled(format!("[{kind}] {label}"), style)
+    Line::styled(format!("[{tag}] {label}"), style)
 }
 
 /// An explanation under a check, only shown when there is something to say.
@@ -298,17 +307,17 @@ fn welcome(frame: &mut Frame, area: Rect, app: &App) {
     match (&app.checks.result, app.checks.running) {
         (_, true) | (None, _) => lines.push(Line::raw("Checking prerequisites...")),
         (Some(result), false) => {
-            lines.push(status("OK", &app.host.system));
+            lines.push(status(Status::Ok, &app.host.system));
 
             if app.offline {
-                lines.push(status("--", "Internet"));
+                lines.push(status(Status::Off, "Internet"));
                 lines.push(note(
                     "Offline install: everything needed is on this medium.",
                 ));
             } else if result.internet.online() {
-                lines.push(status("OK", "Internet"));
+                lines.push(status(Status::Ok, "Internet"));
             } else {
-                lines.push(status("FAIL", "Internet"));
+                lines.push(status(Status::Fail, "Internet"));
                 let mut down = Vec::new();
                 if !result.internet.github {
                     down.push("github.com");
@@ -323,14 +332,14 @@ fn welcome(frame: &mut Frame, area: Rect, app: &App) {
             }
 
             if app.has_usable_disk() {
-                lines.push(status("OK", "Disk"));
+                lines.push(status(Status::Ok, "Disk"));
             } else {
-                lines.push(status("FAIL", "Disk"));
+                lines.push(status(Status::Fail, "Disk"));
                 lines.push(note("No disk to install onto was found."));
             }
 
             if !app.missing_tools().is_empty() {
-                lines.push(status("FAIL", "Tools"));
+                lines.push(status(Status::Fail, "Tools"));
                 lines.push(note(&format!(
                     "Not found: {}. Run this from a NixOS installer environment.",
                     app.missing_tools().join(", ")
@@ -338,11 +347,11 @@ fn welcome(frame: &mut Frame, area: Rect, app: &App) {
             }
 
             if let Some(clock) = &result.clock_note {
-                lines.push(status("WARN", "Clock"));
+                lines.push(status(Status::Warn, "Clock"));
                 lines.push(note(clock));
             }
             if result.on_ac == Some(false) {
-                lines.push(status("WARN", "Battery"));
+                lines.push(status(Status::Warn, "Battery"));
                 lines.push(note(
                     "Not on AC power. Losing power mid-install can leave the disk broken.",
                 ));
@@ -723,7 +732,7 @@ mod tests {
         let mut a = app();
         a.screen = Screen::Summary;
         let out = draw(&a);
-        for (label, _) in BAR {
+        for (_, label) in STEPS {
             assert!(out.contains(label), "{label}");
         }
     }

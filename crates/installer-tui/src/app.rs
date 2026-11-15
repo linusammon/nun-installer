@@ -21,37 +21,27 @@ pub enum Screen {
     Done,
 }
 
-/// The step bar at the top: a label and the screens that belong to it.
-pub const BAR: &[(&str, &[Screen])] = &[
-    ("Welcome", &[Screen::Welcome]),
-    ("Keyboard", &[Screen::Keyboard]),
-    ("Timezone", &[Screen::Timezone]),
-    ("Language", &[Screen::Locale]),
-    ("Disk", &[Screen::Disk]),
-    ("User", &[Screen::User]),
-    ("Review", &[Screen::Summary]),
-    ("Install", &[Screen::Installing]),
-    ("Done", &[Screen::Done]),
-];
-
-/// Screens in the order they are walked through. The keyboard comes first so
-/// that searching the timezone and language lists already uses the right layout.
-const FLOW: &[Screen] = &[
-    Screen::Welcome,
-    Screen::Keyboard,
-    Screen::Timezone,
-    Screen::Locale,
-    Screen::Disk,
-    Screen::User,
-    Screen::Summary,
-    Screen::Installing,
-    Screen::Done,
+/// Every screen in the order it is walked through, with its label in the step
+/// bar. The one place the flow is defined. The keyboard comes first so that
+/// searching the timezone and language lists already uses the right layout.
+pub const STEPS: &[(Screen, &str)] = &[
+    (Screen::Welcome, "Welcome"),
+    (Screen::Keyboard, "Keyboard"),
+    (Screen::Timezone, "Timezone"),
+    (Screen::Locale, "Language"),
+    (Screen::Disk, "Disk"),
+    (Screen::User, "User"),
+    (Screen::Summary, "Review"),
+    (Screen::Installing, "Install"),
+    (Screen::Done, "Done"),
 ];
 
 impl Screen {
-    pub fn bar_index(self) -> usize {
-        BAR.iter()
-            .position(|(_, screens)| screens.contains(&self))
+    /// Position in [`STEPS`].
+    pub fn step(self) -> usize {
+        STEPS
+            .iter()
+            .position(|(screen, _)| *screen == self)
             .unwrap_or(0)
     }
 }
@@ -443,15 +433,15 @@ impl App {
     // ---- navigation ----
 
     fn index(&self) -> usize {
-        FLOW.iter().position(|s| *s == self.screen).unwrap_or(0)
+        self.screen.step()
     }
 
     fn back(&mut self) {
-        self.screen = FLOW[self.index().saturating_sub(1)];
+        self.screen = STEPS[self.index().saturating_sub(1)].0;
     }
 
     fn go_next(&mut self) {
-        self.screen = FLOW[(self.index() + 1).min(FLOW.len() - 1)];
+        self.screen = STEPS[(self.index() + 1).min(STEPS.len() - 1)].0;
     }
 
     /// Move on if this screen's answers are valid, otherwise show why not.
@@ -1753,14 +1743,42 @@ mod tests {
     }
 
     #[test]
-    fn step_bar_maps_every_screen_once() {
-        assert_eq!(BAR[Screen::Welcome.bar_index()].0, "Welcome");
-        assert_eq!(BAR[Screen::Summary.bar_index()].0, "Review");
-        assert_eq!(BAR[Screen::Done.bar_index()].0, "Done");
-        let all: Vec<_> = BAR.iter().flat_map(|(_, s)| s.iter().copied()).collect();
-        assert_eq!(
-            all, FLOW,
-            "every screen is in the bar exactly once, in order"
-        );
+    fn every_screen_has_exactly_one_step_in_the_bar() {
+        // Adding a Screen without listing it here is a compile error, and
+        // without adding it to STEPS a test failure.
+        let all = [
+            Screen::Welcome,
+            Screen::Keyboard,
+            Screen::Timezone,
+            Screen::Locale,
+            Screen::Disk,
+            Screen::User,
+            Screen::Summary,
+            Screen::Installing,
+            Screen::Done,
+        ];
+        for screen in all {
+            match screen {
+                Screen::Welcome
+                | Screen::Keyboard
+                | Screen::Timezone
+                | Screen::Locale
+                | Screen::Disk
+                | Screen::User
+                | Screen::Summary
+                | Screen::Installing
+                | Screen::Done => {}
+            }
+            assert_eq!(
+                STEPS.iter().filter(|(s, _)| *s == screen).count(),
+                1,
+                "{screen:?}"
+            );
+        }
+        assert_eq!(STEPS.len(), all.len());
+        let order: Vec<_> = STEPS.iter().map(|(s, _)| *s).collect();
+        assert_eq!(order, all, "walked through in the listed order");
+        assert_eq!(STEPS[Screen::Welcome.step()].1, "Welcome");
+        assert_eq!(STEPS[Screen::Summary.step()].1, "Review");
     }
 }
