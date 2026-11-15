@@ -34,13 +34,13 @@ pub fn render(frame: &mut Frame, app: &App) {
     .areas(frame.area());
 
     step_bar(frame, middle_row(header), app);
-    match app.screen {
+    match app.screen() {
         Screen::Welcome => welcome(frame, body, app),
         Screen::Timezone => pick_list(
             frame,
             body,
             "Timezone",
-            &app.timezone,
+            app.timezone(),
             true,
             app.error_for(Target::Screen),
         ),
@@ -48,7 +48,7 @@ pub fn render(frame: &mut Frame, app: &App) {
             frame,
             body,
             "Language",
-            &app.locale,
+            app.locale(),
             true,
             app.error_for(Target::Screen),
         ),
@@ -72,7 +72,7 @@ fn middle_row(area: Rect) -> Rect {
 }
 
 fn step_bar(frame: &mut Frame, area: Rect, app: &App) {
-    let current = app.screen.step();
+    let current = app.screen().step();
     let width: usize = STEPS.iter().map(|(_, l)| l.chars().count() + 3).sum();
     let line = if width <= area.width as usize {
         let mut spans = Vec::new();
@@ -100,7 +100,7 @@ fn step_bar(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
-    match app.screen {
+    match app.screen() {
         Screen::Welcome if app.can_continue() => {
             vec![("Enter", "continue"), ("r", "check again"), ("q", "quit")]
         }
@@ -118,14 +118,14 @@ fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ("Esc", "prev"),
             ("Enter", "confirm"),
         ],
-        Screen::Disk if app.disk_focus == DiskField::Disk => vec![
+        Screen::Disk if app.disk().focus() == DiskField::Disk => vec![
             ("Up/Down", "select"),
             ("Tab", "next field"),
             ("r", "rescan"),
             ("Esc", "prev"),
             ("Enter", "confirm"),
         ],
-        Screen::Disk if app.disk_focus == DiskField::Encrypt => vec![
+        Screen::Disk if app.disk().focus() == DiskField::Encrypt => vec![
             ("Space", "toggle"),
             ("Tab", "next field"),
             ("Esc", "prev"),
@@ -135,7 +135,7 @@ fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
         Screen::User => vec![("Tab", "next"), ("Esc", "prev"), ("Enter", "confirm")],
         Screen::Summary => vec![("Esc", "prev"), ("Enter", "install")],
         Screen::Installing => vec![],
-        Screen::Done if app.install.result == Some(Ok(())) => vec![("Enter", "reboot")],
+        Screen::Done if app.install().succeeded() => vec![("Enter", "reboot")],
         Screen::Done => vec![("Enter", "quit")],
     }
 }
@@ -154,7 +154,7 @@ fn footer_bar(frame: &mut Frame, area: Rect, app: &App) {
     }
     let [left, right] =
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(width as u16)]).areas(area);
-    if let Some(notice) = &app.notice {
+    if let Some(notice) = app.notice() {
         frame.render_widget(
             Paragraph::new(Span::styled(format!(" {notice}"), DIM)),
             left,
@@ -304,12 +304,12 @@ fn welcome(frame: &mut Frame, area: Rect, app: &App) {
         Line::raw(""),
     ];
 
-    match (&app.checks.result, app.checks.running) {
+    match (app.checks_result(), app.checks_running()) {
         (_, true) | (None, _) => lines.push(Line::raw("Checking prerequisites...")),
         (Some(result), false) => {
-            lines.push(status(Status::Ok, &app.host.system));
+            lines.push(status(Status::Ok, &app.host().system));
 
-            if app.offline {
+            if app.offline() {
                 lines.push(status(Status::Off, "Internet"));
                 lines.push(note(
                     "Offline install: everything needed is on this medium.",
@@ -378,16 +378,16 @@ fn keyboard(frame: &mut Frame, area: Rect, app: &App) {
         frame,
         left,
         "Layout",
-        &app.layout,
-        app.pane == Pane::Layout,
+        app.keyboard().layout_list(),
+        app.keyboard().pane() == Pane::Layout,
         app.error_for(Target::Screen),
     );
     pick_list(
         frame,
         right,
-        &format!("Variant of \"{}\"", app.layout_description()),
-        &app.variant,
-        app.pane == Pane::Variant,
+        &format!("Variant of \"{}\"", app.keyboard().layout_description()),
+        app.keyboard().variant_list(),
+        app.keyboard().pane() == Pane::Variant,
         None,
     );
 }
@@ -411,7 +411,7 @@ fn disk_detail(d: &DiskInfo) -> String {
 fn disk_list(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
     let error = app.error_for(Target::Disk);
     let title = "Disk — choose the disk to erase";
-    if app.disks.is_empty() {
+    if app.disk().disks().is_empty() {
         frame.render_widget(
             Paragraph::new("No disks found. Press r to scan again.")
                 .block(field_block(title, focused, error)),
@@ -420,7 +420,8 @@ fn disk_list(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
         return;
     }
     let items: Vec<ListItem> = app
-        .disks
+        .disk()
+        .disks()
         .iter()
         .map(|d| {
             let title_style = if d.selectable() { BOLD } else { DIM };
@@ -434,19 +435,23 @@ fn disk_list(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
     let widget = List::new(items)
         .block(field_block(title, focused, error))
         .highlight_symbol("> ");
-    let mut state = list_state(app.disk_selected, app.disks.len(), area.height);
+    let mut state = list_state(
+        app.disk().selected_index(),
+        app.disk().disks().len(),
+        area.height,
+    );
     frame.render_stateful_widget(widget, area, &mut state);
 }
 
 /// Disk, swap and encryption share one screen.
 fn disk_page(frame: &mut Frame, area: Rect, app: &App) {
-    let focus = app.disk_focus;
+    let focus = app.disk().focus();
     let mut rows = vec![
         Constraint::Min(5),
         Constraint::Length(3),
         Constraint::Length(1),
     ];
-    if app.encrypt {
+    if app.disk().encrypt() {
         rows.extend([Constraint::Length(3), Constraint::Length(1)]);
     }
     let areas = Layout::vertical(rows).split(area);
@@ -456,26 +461,26 @@ fn disk_page(frame: &mut Frame, area: Rect, app: &App) {
         frame,
         areas[1],
         "Swap size (MiB, 0 for none)",
-        &app.swap,
+        app.disk().swap(),
         focus == DiskField::Swap,
         app.error_for(Target::Swap),
     );
     frame.render_widget(
         Paragraph::new(checkbox(
             "Encrypt system (LUKS)",
-            app.encrypt,
+            app.disk().encrypt(),
             focus == DiskField::Encrypt,
         )),
         areas[2],
     );
-    if app.encrypt {
+    if app.disk().encrypt() {
         let [a, b] = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
             .areas(areas[3]);
         input_field(
             frame,
             a,
             "Passphrase",
-            &app.passphrase,
+            app.disk().passphrase(),
             focus == DiskField::Passphrase,
             app.error_for(Target::Passphrase),
         );
@@ -483,7 +488,7 @@ fn disk_page(frame: &mut Frame, area: Rect, app: &App) {
             frame,
             b,
             "Repeat passphrase",
-            &app.passphrase_confirm,
+            app.disk().passphrase_confirm(),
             focus == DiskField::Confirm,
             app.error_for(Target::PassphraseConfirm),
         );
@@ -509,8 +514,8 @@ fn user_page(frame: &mut Frame, area: Rect, app: &App) {
         frame,
         name,
         "Username",
-        &app.username,
-        app.user_focus == UserField::Name,
+        app.user().username(),
+        app.user().focus() == UserField::Name,
         app.error_for(Target::Username),
     );
     let [a, b] =
@@ -519,16 +524,16 @@ fn user_page(frame: &mut Frame, area: Rect, app: &App) {
         frame,
         a,
         "Password",
-        &app.password,
-        app.user_focus == UserField::Password,
+        app.user().password(),
+        app.user().focus() == UserField::Password,
         app.error_for(Target::Password),
     );
     input_field(
         frame,
         b,
         "Confirm password",
-        &app.password_confirm,
-        app.user_focus == UserField::Confirm,
+        app.user().password_confirm(),
+        app.user().focus() == UserField::Confirm,
         app.error_for(Target::PasswordConfirm),
     );
     frame.render_widget(
@@ -556,7 +561,10 @@ fn summary_page(frame: &mut Frame, area: Rect, app: &App) {
     let lines = vec![
         row(
             "Disk",
-            app.selected_disk().map(App::disk_label).unwrap_or_default(),
+            app.disk()
+                .selected()
+                .map(App::disk_label)
+                .unwrap_or_default(),
         ),
         row(
             "Encryption",
@@ -591,20 +599,20 @@ fn summary_page(frame: &mut Frame, area: Rect, app: &App) {
         frame,
         field,
         &format!("Type the disk name ({}) to confirm", app.confirm_word()),
-        &app.confirm,
+        app.summary().confirm(),
         true,
         app.error_for(Target::Confirm),
     );
 }
 
 fn install_page(frame: &mut Frame, area: Rect, app: &App) {
-    let steps_height = (app.install.steps.len() as u16).min(area.height / 2);
+    let steps_height = (app.install().steps().len() as u16).min(area.height / 2);
     let [steps, log] =
         Layout::vertical([Constraint::Length(steps_height), Constraint::Min(3)]).areas(area);
 
     let items: Vec<ListItem> = app
-        .install
-        .steps
+        .install()
+        .steps()
         .iter()
         .map(|(name, status)| {
             let (mark, style) = match status {
@@ -620,12 +628,12 @@ fn install_page(frame: &mut Frame, area: Rect, app: &App) {
 
     let rows = log.height.saturating_sub(2) as usize;
     let mut lines: Vec<Line> = app
-        .install
-        .log
+        .install()
+        .log()
         .iter()
         .map(|l| Line::styled(l.clone(), DIM))
         .collect();
-    match &app.install.result {
+    match app.install().result() {
         Some(Ok(())) => lines.push(Line::styled(
             "Installation complete. Press Enter to reboot.",
             OK.add_modifier(Modifier::BOLD),
@@ -699,7 +707,7 @@ mod tests {
             Screen::Installing,
             Screen::Done,
         ] {
-            a.screen = screen;
+            a.jump_to(screen);
             for (w, h) in [(110, 30), (80, 24), (40, 12)] {
                 draw_sized(&a, w, h);
             }
@@ -709,7 +717,7 @@ mod tests {
     #[test]
     fn step_bar_highlights_the_current_step_and_lists_all() {
         let mut a = app();
-        a.screen = Screen::Summary;
+        a.jump_to(Screen::Summary);
         let out = draw(&a);
         for (_, label) in STEPS {
             assert!(out.contains(label), "{label}");
@@ -719,7 +727,7 @@ mod tests {
     #[test]
     fn narrow_terminals_get_a_compact_step_bar() {
         let mut a = app();
-        a.screen = Screen::Disk;
+        a.jump_to(Screen::Disk);
         let out = draw_sized(&a, 60, 24);
         assert!(out.contains("step 5 of 9"), "{out}");
     }
@@ -746,8 +754,9 @@ mod tests {
 
     #[test]
     fn disk_swap_and_encryption_share_one_screen() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut a = app();
-        a.screen = Screen::Disk;
+        a.jump_to(Screen::Disk);
         let out = draw(&a);
         assert!(out.contains("Disk — choose the disk to erase"));
         assert!(out.contains("Swap size (MiB, 0 for none)"));
@@ -757,7 +766,9 @@ mod tests {
             "only shown once encryption is on"
         );
 
-        a.encrypt = true;
+        for key in [KeyCode::Tab, KeyCode::Tab, KeyCode::Char(' ')] {
+            a.handle_key(KeyEvent::new(key, KeyModifiers::NONE));
+        }
         let out = draw(&a);
         assert!(out.contains("[x] Encrypt system (LUKS)"));
         assert!(out.contains("Passphrase"));
@@ -836,7 +847,7 @@ mod tests {
     #[test]
     fn offline_mode_says_so_instead_of_checking_the_internet() {
         let mut a = app();
-        a.offline = true;
+        a.set_offline(true);
         a.start();
         a.on_checks(checks(false));
         let out = draw(&a);
@@ -849,7 +860,7 @@ mod tests {
     fn keyboard_screen_shows_both_panes_with_the_variant_title() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut a = app();
-        a.screen = Screen::Keyboard;
+        a.jump_to(Screen::Keyboard);
         for c in "switz".chars() {
             a.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
@@ -863,8 +874,8 @@ mod tests {
     fn passwords_are_masked_with_stars() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut a = app();
-        a.screen = Screen::User;
-        a.user_focus = UserField::Password;
+        a.jump_to(Screen::User);
+        a.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         for c in "s3cret".chars() {
             a.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
@@ -876,7 +887,7 @@ mod tests {
     #[test]
     fn summary_names_the_disk_to_erase() {
         let mut a = app();
-        a.screen = Screen::Summary;
+        a.jump_to(Screen::Summary);
         let out = draw(&a);
         assert!(out.contains("EVERYTHING ON /dev/vda WILL BE ERASED"));
         assert!(out.contains("Type the disk name (vda) to confirm"));
@@ -889,7 +900,7 @@ mod tests {
     #[test]
     fn the_confirm_field_sits_one_blank_line_below_the_warning() {
         let mut a = app();
-        a.screen = Screen::Summary;
+        a.jump_to(Screen::Summary);
         let out = draw(&a);
         let lines: Vec<_> = out.lines().collect();
         let warning = lines
@@ -906,25 +917,26 @@ mod tests {
 
     #[test]
     fn errors_show_in_the_field_border_not_a_footer() {
-        use crate::app::FieldError;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut a = app();
-        a.screen = Screen::User;
-        a.errors = vec![FieldError {
-            target: Target::Username,
-            message: "bad thing".into(),
-        }];
+        a.jump_to(Screen::User);
+        for c in "Bad".chars() {
+            a.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let out = draw(&a);
-        assert!(out.contains(" bad thing "));
+        assert!(out.contains(" must start with a lowercase letter or underscore "));
+        let bad = "must start with a lowercase letter or underscore";
         // Rendered on the border row, directly under the text row.
         let lines: Vec<_> = out.lines().collect();
-        let i = lines.iter().position(|l| l.contains("bad thing")).unwrap();
+        let i = lines.iter().position(|l| l.contains(bad)).unwrap();
         assert!(lines[i].contains('└'), "{}", lines[i]);
     }
 
     #[test]
     fn hints_sit_on_the_right_and_notice_on_the_left() {
         let mut a = app();
-        a.screen = Screen::Summary;
+        a.jump_to(Screen::Summary);
         a.on_keymap_result(Ok("ch".into()));
         let out = draw(&a);
         let line = out.lines().find(|l| l.contains("Esc prev")).unwrap();
