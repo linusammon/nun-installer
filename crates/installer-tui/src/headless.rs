@@ -1,8 +1,8 @@
 //! Installing from an answers file without the interactive UI.
 
 use installer_core::{
-    build_plan, check_disk, render, run_plan, validate, Answers, Catalog, CatalogPaths, DryRun,
-    Host, Live,
+    build_plan, check_disk, missing_tools, render, run_plan, validate, Answers, Catalog,
+    CatalogPaths, DryRun, Host, Live,
 };
 use std::io::Write;
 use std::path::Path;
@@ -45,6 +45,15 @@ pub fn run(config: &Path, dry_run: bool, yes: bool) -> Result<(), String> {
     }
 
     let host = Host::detect().map_err(|e| e.to_string())?;
+    if !dry_run {
+        let missing = missing_tools();
+        if !missing.is_empty() {
+            return Err(format!(
+                "required programs not found: {} (run this from a NixOS installer environment)",
+                missing.join(", ")
+            ));
+        }
+    }
     let files = render(&answers, &host).map_err(|e| e.to_string())?;
     let plan = build_plan(&answers, &files, &host);
     let total = plan.actions.len();

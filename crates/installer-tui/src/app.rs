@@ -91,6 +91,8 @@ pub struct ChecksResult {
     pub clock_note: Option<String>,
     /// `None`: no battery. `Some(false)`: running on battery.
     pub on_ac: Option<bool>,
+    /// Programs the install needs that are not on PATH.
+    pub missing_tools: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -312,6 +314,13 @@ impl App {
         self.disks.iter().any(DiskInfo::selectable)
     }
 
+    pub fn missing_tools(&self) -> &[String] {
+        self.checks
+            .result
+            .as_ref()
+            .map_or(&[], |r| r.missing_tools.as_slice())
+    }
+
     pub fn internet_ok(&self) -> bool {
         self.offline
             || self
@@ -327,6 +336,7 @@ impl App {
             && self.checks.result.is_some()
             && self.internet_ok()
             && self.has_usable_disk()
+            && self.missing_tools().is_empty()
     }
 
     pub fn on_checks(&mut self, result: ChecksResult) {
@@ -928,10 +938,12 @@ impl App {
                 return None;
             }
         };
+        // Cleanup runs even after a failure and is not something to watch.
         self.install = InstallState {
             steps: plan
                 .actions
                 .iter()
+                .filter(|a| !a.cleanup)
                 .map(|a| (a.description.clone(), StepStatus::Pending))
                 .collect(),
             ..InstallState::default()
@@ -1037,6 +1049,7 @@ mod tests {
             },
             clock_note: None,
             on_ac: None,
+            missing_tools: vec![],
         }
     }
 
@@ -1532,7 +1545,13 @@ mod tests {
             .actions
             .iter()
             .any(|x| x.description.contains("WIPES THE DISK")));
-        assert_eq!(a.install.steps.len(), plan.actions.len());
+        let real = plan.actions.iter().filter(|x| !x.cleanup).count();
+        assert_eq!(
+            a.install.steps.len(),
+            real,
+            "cleanup is not shown as a step"
+        );
+        assert!(real < plan.actions.len());
     }
 
     #[test]
@@ -1584,6 +1603,11 @@ mod tests {
         a.on_install_event(InstallEvent::Finished(Err("boom".into())));
         assert_eq!(a.screen, Screen::Done);
         assert_eq!(a.install.steps[2].1, StepStatus::Failed);
+        assert_eq!(
+            a.install.steps[3].1,
+            StepStatus::Pending,
+            "steps after the failure never ran"
+        );
         assert!(matches!(press(&mut a, KeyCode::Enter)[..], [Effect::Quit]));
     }
 

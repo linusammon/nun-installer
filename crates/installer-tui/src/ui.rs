@@ -327,6 +327,14 @@ fn welcome(frame: &mut Frame, area: Rect, app: &App) {
                 lines.push(note("No disk to install onto was found."));
             }
 
+            if !app.missing_tools().is_empty() {
+                lines.push(status("FAIL", "Tools"));
+                lines.push(note(&format!(
+                    "Not found: {}. Run this from a NixOS installer environment.",
+                    app.missing_tools().join(", ")
+                )));
+            }
+
             if let Some(clock) = &result.clock_note {
                 lines.push(status("WARN", "Clock"));
                 lines.push(note(clock));
@@ -690,6 +698,7 @@ mod tests {
             },
             clock_note: None,
             on_ac: None,
+            missing_tools: vec![],
         }
     }
 
@@ -819,6 +828,29 @@ mod tests {
         assert!(
             out.contains("It will install NixOS with Noctalia, its Greeter as well as Umbriel.")
         );
+    }
+
+    #[test]
+    fn welcome_blocks_and_explains_when_tools_are_missing() {
+        let mut a = app();
+        a.start();
+        a.on_checks(ChecksResult {
+            missing_tools: vec!["disko".into(), "nixos-install".into()],
+            ..checks(true)
+        });
+        assert!(!a.can_continue());
+        let out = draw(&a);
+        assert!(out.contains("[FAIL] Tools"));
+        assert!(out.contains("Not found: disko, nixos-install"));
+        assert!(out.contains("Cannot continue"));
+    }
+
+    #[test]
+    fn welcome_stays_quiet_about_tools_when_all_are_there() {
+        let mut a = app();
+        a.start();
+        a.on_checks(checks(true));
+        assert!(!draw(&a).contains("Tools"));
     }
 
     #[test]

@@ -3,8 +3,8 @@
 
 use crate::app::{AppEvent, ChecksResult, Effect, InstallEvent};
 use installer_core::{
-    apply_console_keymap, check_online, run_plan, system_clock_note, system_on_ac_power,
-    KeymapTools, Live, Reachability,
+    apply_console_keymap, check_online, missing_tools, run_plan, system_clock_note,
+    system_on_ac_power, KeymapTools, Live, Reachability,
 };
 use std::sync::mpsc::Sender;
 
@@ -20,8 +20,11 @@ pub fn spawn(effect: Effect, tx: Sender<AppEvent>) {
                     let _ = output.send(AppEvent::Install(InstallEvent::Output(line.to_owned())));
                 });
                 let progress = tx.clone();
-                let result = run_plan(&plan, &mut live, |i, _| {
-                    let _ = progress.send(AppEvent::Install(InstallEvent::Step(i)));
+                let result = run_plan(&plan, &mut live, |i, action| {
+                    // Cleanup runs after a failure too; it is not a step to show.
+                    if !action.cleanup {
+                        let _ = progress.send(AppEvent::Install(InstallEvent::Step(i)));
+                    }
                 });
                 let _ = tx.send(AppEvent::Install(InstallEvent::Finished(
                     result.map_err(|e| e.to_string()),
@@ -55,6 +58,7 @@ pub fn spawn(effect: Effect, tx: Sender<AppEvent>) {
                     internet,
                     clock_note: system_clock_note(),
                     on_ac: system_on_ac_power(),
+                    missing_tools: missing_tools(),
                 }));
             });
         }
