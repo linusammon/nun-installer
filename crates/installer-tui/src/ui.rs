@@ -4,16 +4,16 @@
 //! at the bottom right, borderless pages, and bordered widgets that turn
 //! yellow when focused and show their own error in the bottom border.
 
-use crate::app::{App, OptionsField, Pane, Screen, StepStatus, Target, UserField, BAR};
+use crate::app::{App, DiskField, Pane, Screen, StepStatus, Target, UserField, BAR};
 use crate::widgets::{FilterList, TextInput};
-use installer_core::{human_size, Boot};
+use installer_core::{human_size, DiskInfo};
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
-const ACCENT: Color = Color::Yellow;
+const ACCENT: Color = Color::Magenta;
 const DIM: Style = Style::new().fg(Color::DarkGray);
 const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
 const OK: Style = Style::new().fg(Color::Green);
@@ -50,7 +50,6 @@ pub fn render(frame: &mut Frame, app: &App) {
         ),
         Screen::Keyboard => keyboard(frame, body, app),
         Screen::Disk => disk_page(frame, body, app),
-        Screen::DiskOptions => options_page(frame, body, app),
         Screen::User => user_page(frame, body, app),
         Screen::Hostname => hostname_page(frame, body, app),
         Screen::Summary => summary_page(frame, body, app),
@@ -76,7 +75,7 @@ fn step_bar(frame: &mut Frame, area: Rect, app: &App) {
         let mut spans = Vec::new();
         for (i, (label, _)) in BAR.iter().enumerate() {
             let style = if i == current {
-                Style::new().fg(Color::Black).bg(ACCENT)
+                Style::new().fg(Color::White).bg(ACCENT)
             } else {
                 Style::new()
             };
@@ -89,7 +88,7 @@ fn step_bar(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(vec![
             Span::styled(
                 format!(" {} ", BAR[current].0),
-                Style::new().fg(Color::Black).bg(ACCENT),
+                Style::new().fg(Color::White).bg(ACCENT),
             ),
             Span::styled(format!("  step {} of {}", current + 1, BAR.len()), DIM),
         ])
@@ -116,18 +115,20 @@ fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ("Esc", "prev"),
             ("Enter", "confirm"),
         ],
-        Screen::Disk => vec![
+        Screen::Disk if app.disk_focus == DiskField::Disk => vec![
             ("Up/Down", "select"),
+            ("Tab", "next field"),
             ("r", "rescan"),
             ("Esc", "prev"),
             ("Enter", "confirm"),
         ],
-        Screen::DiskOptions => vec![
-            ("Tab", "next"),
+        Screen::Disk if app.disk_focus == DiskField::Encrypt => vec![
             ("Space", "toggle"),
+            ("Tab", "next field"),
             ("Esc", "prev"),
             ("Enter", "confirm"),
         ],
+        Screen::Disk => vec![("Tab", "next field"), ("Esc", "prev"), ("Enter", "confirm")],
         Screen::User => vec![("Tab", "next"), ("Esc", "prev"), ("Enter", "confirm")],
         Screen::Hostname => vec![("Esc", "prev"), ("Enter", "confirm")],
         Screen::Summary => vec![("Esc", "prev"), ("Enter", "install")],
@@ -268,40 +269,44 @@ fn pick_list(
 
 // ---- screens ----
 
-fn check(ok: bool, good: &str, bad: &str) -> Line<'static> {
-    if ok {
-        Line::styled(format!("[OK] {good}"), OK)
-    } else {
-        Line::styled(format!("[FAIL] {bad}"), FAIL)
-    }
+/// `[OK] Label`, one line per check. `kind` is OK, FAIL, WARN or `--`.
+fn status(kind: &str, label: &str) -> Line<'static> {
+    let style = match kind {
+        "OK" => OK,
+        "FAIL" => FAIL,
+        "WARN" => WARN,
+        _ => DIM,
+    };
+    Line::styled(format!("[{kind}] {label}"), style)
+}
+
+/// An explanation under a check, only shown when there is something to say.
+fn note(text: &str) -> Line<'static> {
+    Line::styled(format!("       {text}"), DIM)
 }
 
 fn welcome(frame: &mut Frame, area: Rect, app: &App) {
-    let boot = match app.host.boot {
-        Boot::Uefi => "UEFI",
-        Boot::Bios => "BIOS",
-    };
     let mut lines = vec![
         Line::raw("Welcome to the NUN installer."),
         Line::raw(""),
         Line::raw("It will install NixOS with Noctalia, its Greeter as well as Umbriel."),
         Line::raw(""),
-        check(true, &format!("{boot} boot"), ""),
-        check(true, &format!("Architecture: {}", app.host.system), ""),
     ];
 
     match (&app.checks.result, app.checks.running) {
         (_, true) | (None, _) => lines.push(Line::raw("Checking prerequisites...")),
         (Some(result), false) => {
+            lines.push(status("OK", &app.host.system));
+
             if app.offline {
-                lines.push(Line::styled(
-                    "[--] Offline install: everything needed is on this medium",
-                    DIM,
+                lines.push(status("--", "Internet"));
+                lines.push(note(
+                    "Offline install: everything needed is on this medium.",
                 ));
             } else if result.internet.online() {
-                lines.push(check(true, "Internet access", ""));
+                lines.push(status("OK", "Internet"));
             } else {
-                lines.push(check(false, "", "No internet access"));
+                lines.push(status("FAIL", "Internet"));
                 let mut down = Vec::new();
                 if !result.internet.github {
                     down.push("github.com");
@@ -309,29 +314,30 @@ fn welcome(frame: &mut Frame, area: Rect, app: &App) {
                 if !result.internet.cache {
                     down.push("cache.nixos.org");
                 }
-                lines.push(Line::styled(
-                    format!("       Cannot reach {}.", down.join(" and ")),
-                    DIM,
-                ));
-                lines.push(Line::styled(
-                    "       Connect with a cable, or run `nmtui` in another terminal, then press r.",
-                    DIM,
+                lines.push(note(&format!("Cannot reach {}.", down.join(" and "))));
+                lines.push(note(
+                    "Connect with a cable, or run `nmtui` in another terminal, then press r.",
                 ));
             }
-            if let Some(note) = &result.clock_note {
-                lines.push(Line::styled(format!("[WARN] {note}"), WARN));
+
+            if app.has_usable_disk() {
+                lines.push(status("OK", "Disk"));
+            } else {
+                lines.push(status("FAIL", "Disk"));
+                lines.push(note("No disk to install onto was found."));
             }
-            lines.push(check(
-                app.has_usable_disk(),
-                "A usable disk was found",
-                "No disk to install onto was found",
-            ));
+
+            if let Some(clock) = &result.clock_note {
+                lines.push(status("WARN", "Clock"));
+                lines.push(note(clock));
+            }
             if result.on_ac == Some(false) {
-                lines.push(Line::styled(
-                    "[WARN] Not on AC power. Losing power mid-install can leave the disk broken.",
-                    WARN,
+                lines.push(status("WARN", "Battery"));
+                lines.push(note(
+                    "Not on AC power. Losing power mid-install can leave the disk broken.",
                 ));
             }
+
             lines.push(Line::raw(""));
             if app.can_continue() {
                 lines.push(Line::raw("Press Enter to continue."));
@@ -367,15 +373,29 @@ fn keyboard(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn disk_page(frame: &mut Frame, area: Rect, app: &App) {
+/// Second line of a disk row. Virtual disks report no model, so name the kind.
+fn disk_detail(d: &DiskInfo) -> String {
+    if let Some(reason) = d.rejected.first() {
+        return format!("unavailable: {reason}");
+    }
+    let model = if !d.model.is_empty() {
+        d.model.clone()
+    } else if d.name.starts_with("vd") || d.name.starts_with("xvd") {
+        "Virtual disk".to_owned()
+    } else {
+        "Disk".to_owned()
+    };
+    let removable = if d.removable { "  [removable]" } else { "" };
+    format!("{model}{removable}")
+}
+
+fn disk_list(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
     let error = app.error_for(Target::Disk);
+    let title = "Disk — choose the disk to erase";
     if app.disks.is_empty() {
         frame.render_widget(
-            Paragraph::new("No disks found. Press r to scan again.").block(field_block(
-                "Disk — choose the disk to erase",
-                true,
-                error,
-            )),
+            Paragraph::new("No disks found. Press r to scan again.")
+                .block(field_block(title, focused, error)),
             area,
         );
         return;
@@ -384,64 +404,60 @@ fn disk_page(frame: &mut Frame, area: Rect, app: &App) {
         .disks
         .iter()
         .map(|d| {
-            let usable = d.selectable();
-            let title_style = if usable { BOLD } else { DIM };
+            let title_style = if d.selectable() { BOLD } else { DIM };
             let first = Line::from(vec![
                 Span::styled(d.path.display().to_string(), title_style),
                 Span::styled(format!("  {}", human_size(d.size_bytes)), title_style),
             ]);
-            let second = match d.rejected.first() {
-                Some(reason) => Line::styled(format!("unavailable: {reason}"), DIM),
-                None => {
-                    let model = if d.model.is_empty() { "Disk" } else { &d.model };
-                    let removable = if d.removable { "  [removable]" } else { "" };
-                    Line::styled(format!("{model}{removable}"), DIM)
-                }
-            };
-            ListItem::new(vec![first, second])
+            ListItem::new(vec![first, Line::styled(disk_detail(d), DIM)])
         })
         .collect();
     let widget = List::new(items)
-        .block(field_block("Disk — choose the disk to erase", true, error))
+        .block(field_block(title, focused, error))
         .highlight_symbol("> ");
     let mut state = list_state(app.disk_selected, app.disks.len(), area.height);
     frame.render_stateful_widget(widget, area, &mut state);
 }
 
-fn options_page(frame: &mut Frame, area: Rect, app: &App) {
-    let focus = app.options_focus;
-    let mut rows = vec![Constraint::Length(3), Constraint::Length(1)];
+/// Disk, swap and encryption share one screen.
+fn disk_page(frame: &mut Frame, area: Rect, app: &App) {
+    let focus = app.disk_focus;
+    let mut rows = vec![
+        Constraint::Min(5),
+        Constraint::Length(3),
+        Constraint::Length(1),
+    ];
     if app.encrypt {
-        rows.push(Constraint::Length(3));
+        rows.extend([Constraint::Length(3), Constraint::Length(1)]);
     }
-    rows.push(Constraint::Min(0));
     let areas = Layout::vertical(rows).split(area);
 
+    disk_list(frame, areas[0], app, focus == DiskField::Disk);
     input_field(
         frame,
-        areas[0],
+        areas[1],
         "Swap size (MiB, 0 for none)",
         &app.swap,
-        focus == OptionsField::Swap,
+        focus == DiskField::Swap,
         app.error_for(Target::Swap),
     );
     frame.render_widget(
         Paragraph::new(checkbox(
             "Encrypt system (LUKS)",
             app.encrypt,
-            focus == OptionsField::Encrypt,
+            focus == DiskField::Encrypt,
         )),
-        areas[1],
+        areas[2],
     );
     if app.encrypt {
         let [a, b] = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .areas(areas[2]);
+            .areas(areas[3]);
         input_field(
             frame,
             a,
             "Passphrase",
             &app.passphrase,
-            focus == OptionsField::Passphrase,
+            focus == DiskField::Passphrase,
             app.error_for(Target::Passphrase),
         );
         input_field(
@@ -449,7 +465,7 @@ fn options_page(frame: &mut Frame, area: Rect, app: &App) {
             b,
             "Repeat passphrase",
             &app.passphrase_confirm,
-            focus == OptionsField::Confirm,
+            focus == DiskField::Confirm,
             app.error_for(Target::PassphraseConfirm),
         );
         frame.render_widget(
@@ -457,7 +473,7 @@ fn options_page(frame: &mut Frame, area: Rect, app: &App) {
                 "You will type this passphrase every time the computer boots.",
                 DIM,
             )),
-            areas[3],
+            areas[4],
         );
     }
 }
@@ -704,7 +720,6 @@ mod tests {
             Screen::Locale,
             Screen::Keyboard,
             Screen::Disk,
-            Screen::DiskOptions,
             Screen::User,
             Screen::Hostname,
             Screen::Summary,
@@ -744,29 +759,66 @@ mod tests {
 
         a.on_checks(checks(true));
         let out = draw(&a);
-        assert!(out.contains("[OK] Internet access"));
-        assert!(out.contains("[OK] A usable disk was found"));
-        assert!(out.contains("[OK] UEFI boot"));
-        assert!(out.contains("[OK] Architecture: x86_64-linux"));
+        assert!(out.contains("[OK] x86_64-linux"));
+        assert!(out.contains("[OK] Internet"));
+        assert!(out.contains("[OK] Disk"));
         assert!(out.contains("Press Enter to continue."));
 
         a.on_checks(checks(false));
         let out = draw(&a);
-        assert!(out.contains("[FAIL] No internet access"));
+        assert!(out.contains("[FAIL] Internet"));
         assert!(out.contains("github.com and cache.nixos.org"));
         assert!(out.contains("Cannot continue"));
     }
 
     #[test]
-    fn welcome_intro_and_bios_detection() {
+    fn disk_swap_and_encryption_share_one_screen() {
         let mut a = app();
-        a.host.boot = Boot::Bios;
+        a.screen = Screen::Disk;
         let out = draw(&a);
+        assert!(out.contains("Disk — choose the disk to erase"));
+        assert!(out.contains("Swap size (MiB, 0 for none)"));
+        assert!(out.contains("[ ] Encrypt system (LUKS)"));
+        assert!(
+            !out.contains("Passphrase"),
+            "only shown once encryption is on"
+        );
+
+        a.encrypt = true;
+        let out = draw(&a);
+        assert!(out.contains("[x] Encrypt system (LUKS)"));
+        assert!(out.contains("Passphrase"));
+        assert!(out.contains("Repeat passphrase"));
+    }
+
+    #[test]
+    fn disk_rows_describe_what_the_disk_is() {
+        let disk = |name: &str, model: &str, removable: bool| DiskInfo {
+            path: format!("/dev/{name}").into(),
+            name: name.into(),
+            size_bytes: 1 << 30,
+            model: model.into(),
+            removable,
+            rejected: vec![],
+        };
+        assert_eq!(disk_detail(&disk("vdb", "", false)), "Virtual disk");
+        assert_eq!(disk_detail(&disk("sda", "", false)), "Disk");
+        assert_eq!(
+            disk_detail(&disk("sda", "USB Stick", true)),
+            "USB Stick  [removable]"
+        );
+        let mut rejected = disk("sda", "", false);
+        rejected.rejected = vec![installer_core::SafetyError::SwapActive("/dev/sda1".into())];
+        assert!(disk_detail(&rejected).starts_with("unavailable: "));
+    }
+
+    #[test]
+    fn welcome_intro_text() {
+        let out = draw(&app());
         assert!(out.contains("Welcome to the NUN installer."));
         assert!(
             out.contains("It will install NixOS with Noctalia, its Greeter as well as Umbriel.")
         );
-        assert!(out.contains("[OK] BIOS boot"));
     }
 
     #[test]
@@ -779,8 +831,10 @@ mod tests {
             ..checks(true)
         });
         let out = draw(&a);
-        assert!(out.contains("[WARN] The system clock looks wrong"));
-        assert!(out.contains("[WARN] Not on AC power"));
+        assert!(out.contains("[WARN] Clock"));
+        assert!(out.contains("The system clock looks wrong"));
+        assert!(out.contains("[WARN] Battery"));
+        assert!(out.contains("Not on AC power"));
     }
 
     #[test]
@@ -790,6 +844,7 @@ mod tests {
         a.start();
         a.on_checks(checks(false));
         let out = draw(&a);
+        assert!(out.contains("[--] Internet"));
         assert!(out.contains("Offline install"));
         assert!(!out.contains("[FAIL]"));
     }

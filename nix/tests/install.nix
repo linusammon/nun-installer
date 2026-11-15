@@ -300,13 +300,7 @@ pkgs.testers.runNixOSTest {
             wait_for("Press Enter to continue.")
             send("Enter")
 
-            wait_for("Timezone —")
-            type_text("Europe/Berlin")
-            send("Enter")
-
-            wait_for("Language —")
-            send("Enter")
-
+            # The keyboard comes first, so the searches below use the chosen layout.
             wait_for("Layout —")
             type_text("switzerland")
             send("Enter")
@@ -315,18 +309,27 @@ pkgs.testers.runNixOSTest {
             type_text("french")
             send("Enter")
 
+            wait_for("Timezone —")
+            type_text("Europe/Berlin")
+            send("Enter")
+
+            wait_for("Language —")
+            send("Enter")
+
             wait_for("Disk — choose")
             installer.succeed("tmux capture-pane -pt nun | grep -q 'unavailable'")  # the installer's own disk
             installer.succeed("tmux capture-pane -pt nun >&2")
             send("Enter")
 
+            # Disk, swap and encryption are one screen; Enter moves field to field
+            # and the last one submits.
             wait_for("Swap size")
-            send("BSpace BSpace BSpace BSpace")
             type_text("512")
+            send("Enter")  # swap -> encryption
             if encrypted:
-                send("Tab", "Space", "Tab")
+                send("Space", "Enter")  # toggle, then to the passphrase
                 type_text("${encryptionPassword}")
-                send("Tab")
+                send("Enter")
                 type_text("${encryptionPassword}")
             send("Enter")
 

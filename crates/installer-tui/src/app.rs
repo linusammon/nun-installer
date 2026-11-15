@@ -15,7 +15,6 @@ pub enum Screen {
     Locale,
     Keyboard,
     Disk,
-    DiskOptions,
     User,
     Hostname,
     Summary,
@@ -26,10 +25,10 @@ pub enum Screen {
 /// The step bar at the top: a label and the screens that belong to it.
 pub const BAR: &[(&str, &[Screen])] = &[
     ("Welcome", &[Screen::Welcome]),
+    ("Keyboard", &[Screen::Keyboard]),
     ("Timezone", &[Screen::Timezone]),
     ("Language", &[Screen::Locale]),
-    ("Keyboard", &[Screen::Keyboard]),
-    ("Disk", &[Screen::Disk, Screen::DiskOptions]),
+    ("Disk", &[Screen::Disk]),
     ("User", &[Screen::User]),
     ("Hostname", &[Screen::Hostname]),
     ("Review", &[Screen::Summary]),
@@ -37,14 +36,14 @@ pub const BAR: &[(&str, &[Screen])] = &[
     ("Done", &[Screen::Done]),
 ];
 
-/// Screens in the order they are walked through.
+/// Screens in the order they are walked through. The keyboard comes first so
+/// that searching the timezone and language lists already uses the right layout.
 const FLOW: &[Screen] = &[
     Screen::Welcome,
+    Screen::Keyboard,
     Screen::Timezone,
     Screen::Locale,
-    Screen::Keyboard,
     Screen::Disk,
-    Screen::DiskOptions,
     Screen::User,
     Screen::Hostname,
     Screen::Summary,
@@ -142,7 +141,8 @@ pub enum Pane {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OptionsField {
+pub enum DiskField {
+    Disk,
     Swap,
     Encrypt,
     Passphrase,
@@ -204,7 +204,7 @@ pub struct App {
     pub encrypt: bool,
     pub passphrase: TextInput,
     pub passphrase_confirm: TextInput,
-    pub options_focus: OptionsField,
+    pub disk_focus: DiskField,
 
     pub username: TextInput,
     pub password: TextInput,
@@ -272,11 +272,11 @@ impl App {
             pane: Pane::Layout,
             variant_layout: String::new(),
             disk_selected,
-            swap: TextInput::new("4096"),
+            swap: TextInput::new("0"),
             encrypt: false,
             passphrase: TextInput::masked(),
             passphrase_confirm: TextInput::masked(),
-            options_focus: OptionsField::Swap,
+            disk_focus: DiskField::Disk,
             username: TextInput::default(),
             password: TextInput::masked(),
             password_confirm: TextInput::masked(),
@@ -367,10 +367,10 @@ impl App {
         self.disks.get(self.disk_selected)
     }
 
-    pub fn options_fields(&self) -> Vec<OptionsField> {
-        let mut f = vec![OptionsField::Swap, OptionsField::Encrypt];
+    pub fn disk_fields(&self) -> Vec<DiskField> {
+        let mut f = vec![DiskField::Disk, DiskField::Swap, DiskField::Encrypt];
         if self.encrypt {
-            f.extend([OptionsField::Passphrase, OptionsField::Confirm]);
+            f.extend([DiskField::Passphrase, DiskField::Confirm]);
         }
         f
     }
@@ -502,10 +502,6 @@ impl App {
                 self.disk_key(key);
                 Vec::new()
             }
-            Screen::DiskOptions => {
-                self.options_key(key);
-                Vec::new()
-            }
             Screen::User => {
                 self.user_key(key);
                 Vec::new()
@@ -526,7 +522,9 @@ impl App {
 
     fn welcome_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         match key.code {
-            KeyCode::Enter if self.can_continue() => self.screen = Screen::Timezone,
+            KeyCode::Enter if self.can_continue() => {
+                self.screen = FLOW[(self.index() + 1).min(FLOW.len() - 1)];
+            }
             KeyCode::Char('r') => {
                 self.disks = (self.rescan)();
                 self.disk_selected = self
@@ -644,86 +642,123 @@ impl App {
             self.errors = errors;
             return Vec::new();
         }
-        self.screen = Screen::Disk;
+        self.screen = FLOW[(self.index() + 1).min(FLOW.len() - 1)];
         vec![Effect::ApplyKeymap {
             layout: self.layout_value(),
             variant: self.variant_value(),
         }]
     }
 
-    fn disk_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Up => self.disk_selected = self.disk_selected.saturating_sub(1),
-            KeyCode::Down => {
-                self.disk_selected =
-                    (self.disk_selected + 1).min(self.disks.len().saturating_sub(1));
-            }
-            KeyCode::Char('r') => {
-                self.disks = (self.rescan)();
-                self.disk_selected = self
-                    .disks
+    fn rescan_disks(&mut self) {
+        self.disks = (self.rescan)();
+        self.disk_selected = self
+            .disks
+            .iter()
+            .position(DiskInfo::selectable)
+            .unwrap_or(0);
+    }
+
+    /// Why the highlighted disk cannot be used, if it cannot.
+    fn disk_problem(&self) -> Option<String> {
+        match self.selected_disk() {
+            None => Some("no disk found, press r to scan again".into()),
+            Some(d) if !d.selectable() => Some(
+                d.rejected
                     .iter()
-                    .position(DiskInfo::selectable)
-                    .unwrap_or(0);
-            }
-            KeyCode::Esc => self.back(),
-            KeyCode::Enter => match self.selected_disk() {
-                None => self.fail(Target::Disk, "no disk found, press r to scan again"),
-                Some(d) if !d.selectable() => {
-                    let msg = d
-                        .rejected
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join("; ");
-                    self.fail(Target::Disk, msg);
-                }
-                Some(_) => self.advance(&[Field::DiskDevice]),
-            },
-            _ => {}
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            ),
+            Some(_) => None,
         }
     }
 
-    fn move_options_focus(&mut self, delta: isize) {
-        let fields = self.options_fields();
+    fn move_disk_focus(&mut self, delta: isize) {
+        let fields = self.disk_fields();
         let i = fields
             .iter()
-            .position(|f| *f == self.options_focus)
+            .position(|f| *f == self.disk_focus)
             .unwrap_or(0) as isize;
         let n = fields.len() as isize;
-        self.options_focus = fields[(i + delta).rem_euclid(n) as usize];
+        self.disk_focus = fields[(i + delta).rem_euclid(n) as usize];
     }
 
-    fn options_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Tab | KeyCode::Down => self.move_options_focus(1),
-            KeyCode::BackTab | KeyCode::Up => self.move_options_focus(-1),
-            KeyCode::Esc => self.back(),
-            KeyCode::Enter => self.submit_options(),
-            KeyCode::Backspace => match self.options_focus {
-                OptionsField::Swap => self.swap.pop(),
-                OptionsField::Passphrase => self.passphrase.pop(),
-                OptionsField::Confirm => self.passphrase_confirm.pop(),
-                OptionsField::Encrypt => {}
+    /// Enter on a field checks it and moves to the next one; only the last
+    /// field submits the screen.
+    fn disk_enter(&mut self) {
+        match self.disk_focus {
+            DiskField::Disk => match self.disk_problem() {
+                Some(problem) => self.fail(Target::Disk, problem),
+                None => self.disk_focus = DiskField::Swap,
             },
-            _ => match (self.options_focus, text(&key)) {
-                (OptionsField::Encrypt, Some(' ')) => {
+            DiskField::Swap => {
+                if self.swap.value().parse::<u32>().is_err() {
+                    self.fail(Target::Swap, "enter a number of MiB (0 for none)");
+                } else {
+                    self.disk_focus = DiskField::Encrypt;
+                }
+            }
+            DiskField::Encrypt if self.encrypt => self.disk_focus = DiskField::Passphrase,
+            DiskField::Passphrase => self.disk_focus = DiskField::Confirm,
+            DiskField::Encrypt | DiskField::Confirm => self.submit_disk(),
+        }
+    }
+
+    fn disk_key(&mut self, key: KeyEvent) {
+        match (self.disk_focus, key.code) {
+            (_, KeyCode::Esc) => self.back(),
+            (_, KeyCode::Enter) => self.disk_enter(),
+            (_, KeyCode::Tab) => self.move_disk_focus(1),
+            (_, KeyCode::BackTab) => self.move_disk_focus(-1),
+
+            // In the list the arrows pick a disk; leaving it is Tab or Enter.
+            (DiskField::Disk, KeyCode::Up) => {
+                self.disk_selected = self.disk_selected.saturating_sub(1);
+            }
+            (DiskField::Disk, KeyCode::Down) => {
+                self.disk_selected =
+                    (self.disk_selected + 1).min(self.disks.len().saturating_sub(1));
+            }
+            (DiskField::Disk, KeyCode::Char('r')) => self.rescan_disks(),
+
+            // In the fields the arrows move between them.
+            (_, KeyCode::Up) => self.move_disk_focus(-1),
+            (_, KeyCode::Down) => self.move_disk_focus(1),
+
+            (DiskField::Swap, KeyCode::Backspace) => self.swap.pop(),
+            (DiskField::Passphrase, KeyCode::Backspace) => self.passphrase.pop(),
+            (DiskField::Confirm, KeyCode::Backspace) => self.passphrase_confirm.pop(),
+            (focus, _) => match (focus, text(&key)) {
+                (DiskField::Encrypt, Some(' ')) => {
                     self.encrypt = !self.encrypt;
                     if !self.encrypt {
                         self.passphrase.clear();
                         self.passphrase_confirm.clear();
                     }
                 }
-                (OptionsField::Swap, Some(c)) if c.is_ascii_digit() => self.swap.push(c),
-                (OptionsField::Passphrase, Some(c)) => self.passphrase.push(c),
-                (OptionsField::Confirm, Some(c)) => self.passphrase_confirm.push(c),
+                (DiskField::Swap, Some(c)) if c.is_ascii_digit() => {
+                    // The default is "0"; typing a size replaces it.
+                    if self.swap.value() == "0" {
+                        self.swap.clear();
+                    }
+                    self.swap.push(c);
+                }
+                (DiskField::Passphrase, Some(c)) => self.passphrase.push(c),
+                (DiskField::Confirm, Some(c)) => self.passphrase_confirm.push(c),
                 _ => {}
             },
         }
     }
 
-    fn submit_options(&mut self) {
+    /// Check the whole screen and move on, or focus the first problem.
+    fn submit_disk(&mut self) {
         let mut errors = Vec::new();
+        if let Some(problem) = self.disk_problem() {
+            errors.push(FieldError {
+                target: Target::Disk,
+                message: problem,
+            });
+        }
         if self.swap.value().parse::<u32>().is_err() {
             errors.push(FieldError {
                 target: Target::Swap,
@@ -739,9 +774,15 @@ impl App {
         }
         if errors.is_empty() {
             self.advance(&[]);
-        } else {
-            self.errors = errors;
+            return;
         }
+        self.disk_focus = match errors[0].target {
+            Target::Disk => DiskField::Disk,
+            Target::Swap => DiskField::Swap,
+            Target::Passphrase => DiskField::Passphrase,
+            _ => DiskField::Confirm,
+        };
+        self.errors = errors;
     }
 
     fn move_user_focus(&mut self, delta: isize) {
@@ -1029,19 +1070,32 @@ mod tests {
             .join("; ")
     }
 
-    /// Walk to the Disk screen, keeping defaults (us layout, no variants).
-    fn to_disk(app: &mut App) {
+    /// Walk to the Timezone screen: welcome, then the keyboard (us, no variants).
+    fn to_timezone(app: &mut App) {
         press(app, KeyCode::Enter); // welcome
+        press(app, KeyCode::Enter); // keyboard
+        assert_eq!(app.screen, Screen::Timezone);
+    }
+
+    /// Walk to the Disk screen, keeping defaults.
+    fn to_disk(app: &mut App) {
+        to_timezone(app);
         press(app, KeyCode::Enter); // timezone
         press(app, KeyCode::Enter); // locale
-        press(app, KeyCode::Enter); // keyboard (us, no variants)
+    }
+
+    /// Walk to the User screen: first usable disk, no swap, no encryption.
+    fn to_user(app: &mut App) {
+        to_disk(app);
+        assert_eq!(app.screen, Screen::Disk);
+        press(app, KeyCode::Enter); // disk -> swap
+        press(app, KeyCode::Enter); // swap -> encrypt
+        press(app, KeyCode::Enter); // encryption is off, so this submits
+        assert_eq!(app.screen, Screen::User);
     }
 
     fn to_summary(app: &mut App) {
-        to_disk(app);
-        assert_eq!(app.screen, Screen::Disk);
-        press(app, KeyCode::Enter);
-        press(app, KeyCode::Enter); // options as is
+        to_user(app);
         type_str(app, "alice");
         press(app, KeyCode::Tab);
         type_str(app, "hunter2");
@@ -1080,7 +1134,7 @@ mod tests {
 
         a.on_checks(online());
         press(&mut a, KeyCode::Enter);
-        assert_eq!(a.screen, Screen::Timezone);
+        assert_eq!(a.screen, Screen::Keyboard);
     }
 
     #[test]
@@ -1122,7 +1176,7 @@ mod tests {
     #[test]
     fn typing_filters_and_choice_reaches_answers() {
         let mut a = ready();
-        press(&mut a, KeyCode::Enter);
+        to_timezone(&mut a);
         type_str(&mut a, "zur");
         press(&mut a, KeyCode::Enter);
         assert_eq!(a.screen, Screen::Locale);
@@ -1132,19 +1186,19 @@ mod tests {
     #[test]
     fn esc_clears_filter_before_going_back() {
         let mut a = ready();
-        press(&mut a, KeyCode::Enter);
+        to_timezone(&mut a);
         type_str(&mut a, "zur");
         press(&mut a, KeyCode::Esc);
         assert_eq!(a.screen, Screen::Timezone);
         assert_eq!(a.timezone.filter(), "");
         press(&mut a, KeyCode::Esc);
-        assert_eq!(a.screen, Screen::Welcome);
+        assert_eq!(a.screen, Screen::Keyboard);
     }
 
     #[test]
     fn empty_filter_result_cannot_be_submitted() {
         let mut a = ready();
-        press(&mut a, KeyCode::Enter);
+        to_timezone(&mut a);
         type_str(&mut a, "zzz");
         press(&mut a, KeyCode::Enter);
         assert_eq!(a.screen, Screen::Timezone);
@@ -1152,9 +1206,7 @@ mod tests {
     }
 
     fn to_keyboard(a: &mut App) {
-        for _ in 0..3 {
-            press(a, KeyCode::Enter);
-        }
+        press(a, KeyCode::Enter);
         assert_eq!(a.screen, Screen::Keyboard);
     }
 
@@ -1163,7 +1215,7 @@ mod tests {
         let mut a = ready();
         to_keyboard(&mut a);
         let fx = press(&mut a, KeyCode::Enter);
-        assert_eq!(a.screen, Screen::Disk);
+        assert_eq!(a.screen, Screen::Timezone);
         let [Effect::ApplyKeymap { layout, variant }] = &fx[..] else {
             panic!("expected keymap effect, got {fx:?}");
         };
@@ -1198,7 +1250,7 @@ mod tests {
 
         type_str(&mut a, "french");
         let fx = press(&mut a, KeyCode::Enter);
-        assert_eq!(a.screen, Screen::Disk);
+        assert_eq!(a.screen, Screen::Timezone);
         let [Effect::ApplyKeymap { layout, variant }] = &fx[..] else {
             panic!("expected keymap effect, got {fx:?}");
         };
@@ -1236,7 +1288,7 @@ mod tests {
         press(&mut a, KeyCode::Esc);
         assert_eq!(a.layout.filter(), "");
         press(&mut a, KeyCode::Esc);
-        assert_eq!(a.screen, Screen::Locale);
+        assert_eq!(a.screen, Screen::Welcome);
     }
 
     #[test]
@@ -1253,43 +1305,123 @@ mod tests {
     fn disk_picker_starts_on_first_usable_disk_and_refuses_rejected_ones() {
         let mut a = ready();
         to_disk(&mut a);
+        assert_eq!(a.screen, Screen::Disk);
+        assert_eq!(a.disk_focus, DiskField::Disk);
         assert_eq!(a.selected_disk().unwrap().name, "vda");
         press(&mut a, KeyCode::Up);
         assert_eq!(a.selected_disk().unwrap().name, "sda");
         press(&mut a, KeyCode::Enter);
-        assert_eq!(a.screen, Screen::Disk);
+        assert_eq!(a.disk_focus, DiskField::Disk, "stays on the list");
         assert!(message(&a).contains("mounted"));
         assert_eq!(a.errors[0].target, Target::Disk);
+    }
+
+    #[test]
+    fn swap_defaults_to_none() {
+        let a = app();
+        assert_eq!(a.swap.value(), "0");
+        assert_eq!(a.answers().disk.swap_size_mib, 0);
+    }
+
+    #[test]
+    fn enter_moves_through_the_fields_and_only_the_last_one_submits() {
+        let mut a = ready();
+        to_disk(&mut a);
+        press(&mut a, KeyCode::Enter);
+        assert_eq!((a.screen, a.disk_focus), (Screen::Disk, DiskField::Swap));
+        press(&mut a, KeyCode::Enter);
+        assert_eq!((a.screen, a.disk_focus), (Screen::Disk, DiskField::Encrypt));
+        press(&mut a, KeyCode::Enter);
+        assert_eq!(
+            a.screen,
+            Screen::User,
+            "encryption is off, so this was the last field"
+        );
+    }
+
+    #[test]
+    fn enter_on_swap_rejects_a_non_number_without_moving_on() {
+        let mut a = ready();
+        to_disk(&mut a);
+        press(&mut a, KeyCode::Tab);
+        press(&mut a, KeyCode::Backspace);
+        assert_eq!(a.swap.value(), "");
+        press(&mut a, KeyCode::Enter);
+        assert_eq!(a.disk_focus, DiskField::Swap);
+        assert!(a.error_for(Target::Swap).is_some());
+    }
+
+    #[test]
+    fn arrows_pick_disks_in_the_list_and_move_between_fields_elsewhere() {
+        let mut a = ready();
+        to_disk(&mut a);
+        press(&mut a, KeyCode::Down);
+        assert_eq!(
+            a.selected_disk().unwrap().name,
+            "vda",
+            "stops at the last disk"
+        );
+        assert_eq!(a.disk_focus, DiskField::Disk);
+        press(&mut a, KeyCode::Tab);
+        assert_eq!(a.disk_focus, DiskField::Swap);
+        press(&mut a, KeyCode::Up);
+        assert_eq!(a.disk_focus, DiskField::Disk);
+        press(&mut a, KeyCode::Tab);
+        press(&mut a, KeyCode::Down);
+        assert_eq!(a.disk_focus, DiskField::Encrypt);
+        press(&mut a, KeyCode::BackTab);
+        assert_eq!(a.disk_focus, DiskField::Swap);
+    }
+
+    #[test]
+    fn r_rescans_only_while_the_list_is_focused() {
+        let mut a = ready();
+        to_disk(&mut a);
+        press(&mut a, KeyCode::Char('r'));
+        assert_eq!(a.swap.value(), "0", "no stray text in the list");
+        press(&mut a, KeyCode::Tab);
+        press(&mut a, KeyCode::Char('r'));
+        assert_eq!(
+            a.swap.value(),
+            "0",
+            "r is not a digit, so the swap field ignores it"
+        );
     }
 
     #[test]
     fn encryption_fields_appear_only_when_enabled() {
         let mut a = ready();
         to_disk(&mut a);
-        press(&mut a, KeyCode::Enter);
-        assert_eq!(a.screen, Screen::DiskOptions);
-        assert_eq!(a.options_fields().len(), 2);
+        assert_eq!(a.disk_fields().len(), 3);
         press(&mut a, KeyCode::Tab);
-        assert_eq!(a.options_focus, OptionsField::Encrypt);
+        press(&mut a, KeyCode::Tab);
+        assert_eq!(a.disk_focus, DiskField::Encrypt);
         press(&mut a, KeyCode::Char(' '));
         assert!(a.encrypt);
-        assert_eq!(a.options_fields().len(), 4);
+        assert_eq!(a.disk_fields().len(), 5);
         press(&mut a, KeyCode::Char(' '));
         assert!(!a.encrypt);
-        assert_eq!(a.options_fields().len(), 2);
+        assert_eq!(a.disk_fields().len(), 3);
     }
 
     #[test]
     fn passphrase_rules_are_enforced_on_the_right_field() {
         let mut a = ready();
         to_disk(&mut a);
-        press(&mut a, KeyCode::Enter);
+        press(&mut a, KeyCode::Tab);
         press(&mut a, KeyCode::Tab);
         press(&mut a, KeyCode::Char(' '));
-        press(&mut a, KeyCode::Enter);
-        assert_eq!(a.screen, Screen::DiskOptions, "empty passphrase");
+        press(&mut a, KeyCode::Enter); // encrypt -> passphrase
+        press(&mut a, KeyCode::Enter); // passphrase -> confirm
+        press(&mut a, KeyCode::Enter); // confirm submits
+        assert_eq!(a.screen, Screen::Disk, "empty passphrase");
         assert!(a.error_for(Target::Passphrase).is_some());
-        press(&mut a, KeyCode::Tab);
+        assert_eq!(
+            a.disk_focus,
+            DiskField::Passphrase,
+            "focus jumps to the problem"
+        );
+
         type_str(&mut a, "longenough1");
         press(&mut a, KeyCode::Tab);
         type_str(&mut a, "different11");
@@ -1297,6 +1429,7 @@ mod tests {
         assert!(a
             .error_for(Target::PassphraseConfirm)
             .is_some_and(|m| m.contains("do not match")));
+        assert_eq!(a.disk_focus, DiskField::Confirm);
         for _ in 0..11 {
             press(&mut a, KeyCode::Backspace);
         }
@@ -1310,25 +1443,32 @@ mod tests {
     }
 
     #[test]
-    fn swap_field_takes_digits_only() {
+    fn typing_a_swap_size_replaces_the_default_and_takes_digits_only() {
         let mut a = ready();
         to_disk(&mut a);
-        press(&mut a, KeyCode::Enter);
-        for _ in 0..4 {
-            press(&mut a, KeyCode::Backspace);
-        }
+        press(&mut a, KeyCode::Tab);
         type_str(&mut a, "2a0b48");
         assert_eq!(a.swap.value(), "2048");
         assert_eq!(a.answers().disk.swap_size_mib, 2048);
     }
 
     #[test]
-    fn user_screen_checks_name_and_matching_passwords_then_keeps_only_the_hash() {
+    fn submitting_with_a_bad_disk_focuses_the_list() {
         let mut a = ready();
         to_disk(&mut a);
+        press(&mut a, KeyCode::Up); // sda, which is in use
+        press(&mut a, KeyCode::Tab);
+        press(&mut a, KeyCode::Tab);
         press(&mut a, KeyCode::Enter);
-        press(&mut a, KeyCode::Enter);
-        assert_eq!(a.screen, Screen::User);
+        assert_eq!(a.screen, Screen::Disk);
+        assert_eq!(a.disk_focus, DiskField::Disk);
+        assert!(message(&a).contains("mounted"));
+    }
+
+    #[test]
+    fn user_screen_checks_name_and_matching_passwords_then_keeps_only_the_hash() {
+        let mut a = ready();
+        to_user(&mut a);
 
         type_str(&mut a, "Alice");
         press(&mut a, KeyCode::Enter);
@@ -1470,8 +1610,7 @@ mod tests {
     }
 
     #[test]
-    fn step_bar_groups_disk_screens() {
-        assert_eq!(Screen::Disk.bar_index(), Screen::DiskOptions.bar_index());
+    fn step_bar_maps_every_screen_once() {
         assert_eq!(BAR[Screen::Welcome.bar_index()].0, "Welcome");
         assert_eq!(BAR[Screen::Summary.bar_index()].0, "Review");
         assert_eq!(BAR[Screen::Done.bar_index()].0, "Done");
