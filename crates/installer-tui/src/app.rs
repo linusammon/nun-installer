@@ -1022,6 +1022,7 @@ mod tests {
             nixpkgs_url: "github:NixOS/nixpkgs/nixos-unstable".into(),
             disko_url: "github:nix-community/disko".into(),
             nixpkgs_path: None,
+            pinned_lock: None,
         }
     }
 

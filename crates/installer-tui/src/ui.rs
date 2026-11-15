@@ -653,6 +653,7 @@ mod tests {
             nixpkgs_url: String::new(),
             disko_url: String::new(),
             nixpkgs_path: None,
+            pinned_lock: None,
         };
         App::new(catalog, host, false, || {
             vec![DiskInfo {

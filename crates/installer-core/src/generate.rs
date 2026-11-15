@@ -31,6 +31,9 @@ pub struct Host {
     pub disko_url: String,
     /// nixpkgs checkout used to evaluate disko (`NIX_PATH`), if known.
     pub nixpkgs_path: Option<std::path::PathBuf>,
+    /// The installer's own pins for nixpkgs and disko, as a `flake.lock` for the
+    /// generated flake. Without it Nix resolves the inputs at install time.
+    pub pinned_lock: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -39,6 +42,8 @@ pub enum HostError {
     UnsupportedArch(String),
     #[error("NUN_STATE_VERSION is not set (the Nix package sets it to the nixpkgs release)")]
     MissingStateVersion,
+    #[error("cannot use the lock file {path}: {reason}")]
+    Lock { path: String, reason: String },
 }
 
 impl Host {
@@ -62,6 +67,18 @@ impl Host {
                 .filter(|v| !v.is_empty())
                 .unwrap_or_else(|| default.into())
         };
+        let pinned_lock = match std::env::var_os("NUN_LOCK_FILE").filter(|v| !v.is_empty()) {
+            None => None,
+            Some(path) => {
+                let shown = path.to_string_lossy().into_owned();
+                let lock_err = |reason: String| HostError::Lock {
+                    path: shown.clone(),
+                    reason,
+                };
+                let text = std::fs::read_to_string(&path).map_err(|e| lock_err(e.to_string()))?;
+                Some(crate::lock::target_lock(&text).map_err(|e| lock_err(e.to_string()))?)
+            }
+        };
         let boot = if std::path::Path::new("/sys/firmware/efi").exists() {
             Boot::Uefi
         } else {
@@ -76,6 +93,7 @@ impl Host {
             nixpkgs_path: std::env::var_os("NUN_NIXPKGS_PATH")
                 .filter(|v| !v.is_empty())
                 .map(Into::into),
+            pinned_lock,
         })
     }
 }
@@ -187,6 +205,7 @@ mod tests {
             nixpkgs_url: NIXPKGS_URL.into(),
             disko_url: DISKO_URL.into(),
             nixpkgs_path: None,
+            pinned_lock: None,
         }
     }
 

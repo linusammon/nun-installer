@@ -3,7 +3,7 @@
 //! recorded in tests.
 
 use crate::answers::Answers;
-use crate::generate::{GeneratedFiles, Host, LUKS_PASSWORD_PATH};
+use crate::generate::{GeneratedFiles, Host, DISKO_URL, LUKS_PASSWORD_PATH, NIXPKGS_URL};
 use crate::secret::Secret;
 use std::fmt;
 use std::path::PathBuf;
@@ -223,6 +223,17 @@ pub fn build_plan(a: &Answers, files: &GeneratedFiles, host: &Host) -> Plan {
         format!("{CONFIG_DIR}/disko.nix"),
         &files.disko_nix,
     ));
+    // Pin nixpkgs and disko to what this installer was built with. Only valid
+    // while the generated flake uses the default URLs the pins were made for.
+    if let Some(lock) = &host.pinned_lock {
+        if host.nixpkgs_url == NIXPKGS_URL && host.disko_url == DISKO_URL {
+            actions.push(write(
+                "Write flake.lock (pinned inputs)",
+                format!("{CONFIG_DIR}/flake.lock"),
+                lock,
+            ));
+        }
+    }
     actions.push(action(
         "Lock flake inputs",
         ActionKind::Run(Command::new(
@@ -323,6 +334,7 @@ mod tests {
             nixpkgs_url: crate::generate::NIXPKGS_URL.into(),
             disko_url: crate::generate::DISKO_URL.into(),
             nixpkgs_path: Some("/nix/store/fake-nixpkgs".into()),
+            pinned_lock: None,
         };
         build_plan(a, &render(a, &host).unwrap(), &host)
     }
@@ -369,6 +381,61 @@ mod tests {
         assert!(pos("Write disko.nix") < pos("Lock flake inputs"));
         assert!(pos("Lock flake inputs") < pos("Install NixOS"));
         assert!(pos("Partition, format and mount /dev/vda") < pos("Install NixOS"));
+    }
+
+    fn pinned_plan(mutate: impl FnOnce(&mut Host)) -> Plan {
+        let a = answers(false);
+        let mut host = Host {
+            boot: Boot::Uefi,
+            system: "x86_64-linux".into(),
+            state_version: "26.05".into(),
+            nixpkgs_url: NIXPKGS_URL.into(),
+            disko_url: DISKO_URL.into(),
+            nixpkgs_path: None,
+            pinned_lock: Some("{\"pinned\": true}\n".into()),
+        };
+        mutate(&mut host);
+        build_plan(&a, &render(&a, &host).unwrap(), &host)
+    }
+
+    #[test]
+    fn pins_the_inputs_before_locking_when_a_lock_is_available() {
+        let p = pinned_plan(|_| {});
+        let pos = |d: &str| p.actions.iter().position(|a| a.description == d).unwrap();
+        let i = pos("Write flake.lock (pinned inputs)");
+        assert!(pos("Write flake.nix") < i, "needs the flake it pins");
+        assert!(i < pos("Lock flake inputs"));
+        let ActionKind::WriteFile {
+            path,
+            content,
+            mode,
+        } = &p.actions[i].kind
+        else {
+            panic!("expected a file write");
+        };
+        assert_eq!(path, std::path::Path::new("/mnt/etc/nixos/flake.lock"));
+        assert_eq!(*content, Content::Plain("{\"pinned\": true}\n".into()));
+        assert_eq!(*mode, 0o644);
+    }
+
+    #[test]
+    fn no_pin_without_a_lock() {
+        let p = pinned_plan(|h| h.pinned_lock = None);
+        assert!(!descriptions(&p).iter().any(|d| d.contains("flake.lock")));
+    }
+
+    #[test]
+    fn no_pin_when_the_input_urls_are_overridden() {
+        for change in [
+            (|h: &mut Host| h.nixpkgs_url = "path:/nix/store/x".into()) as fn(&mut Host),
+            |h: &mut Host| h.disko_url = "path:/nix/store/y".into(),
+        ] {
+            let p = pinned_plan(change);
+            assert!(
+                !descriptions(&p).iter().any(|d| d.contains("flake.lock")),
+                "the pins were made for the default URLs"
+            );
+        }
     }
 
     #[test]

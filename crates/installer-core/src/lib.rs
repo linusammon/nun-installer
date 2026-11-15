@@ -7,6 +7,7 @@ pub mod disks;
 pub mod exec;
 pub mod generate;
 pub mod keymap;
+pub mod lock;
 pub mod network;
 pub mod password;
 pub mod plan;
@@ -24,6 +25,7 @@ pub use generate::{
     render, Boot, GeneratedFiles, Host, RenderError, LUKS_PASSWORD_PATH, NIXPKGS_URL,
 };
 pub use keymap::{apply_console_keymap, KeymapError, KeymapTools};
+pub use lock::{target_lock, LockError};
 pub use network::{
     check_online, nmcli_available, nmcli_from_env, wifi_connect, wifi_scan, NetError, Reachability,
     WifiNetwork,
