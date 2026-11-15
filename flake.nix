@@ -67,7 +67,9 @@
                   --set-default NUN_LOCALE_SUPPORTED ${pkgs.glibcLocales}/share/i18n/SUPPORTED \
                   --set-default NUN_XKB_BASE_LST ${pkgs.xkeyboard-config}/share/X11/xkb/rules/base.lst \
                   --set-default NUN_STATE_VERSION ${pkgs.lib.trivial.release} \
-                  --set-default NUN_NIXPKGS_PATH ${pkgs.path}
+                  --set-default NUN_NIXPKGS_PATH ${pkgs.path} \
+                  --set-default NUN_CKBCOMP ${pkgs.ckbcomp}/bin/ckbcomp \
+                  --set-default NUN_LOADKEYS ${pkgs.kbd}/bin/loadkeys
               '';
               meta.mainProgram = "nun-installer";
             }
