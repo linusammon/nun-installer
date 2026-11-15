@@ -100,7 +100,7 @@ fn headless(config: &PathBuf, dry_run: bool, yes: bool) -> Result<(), String> {
 
     let host = Host::detect().map_err(|e| e.to_string())?;
     let files = render(&answers, &host).map_err(|e| e.to_string())?;
-    let plan = build_plan(&answers, &files);
+    let plan = build_plan(&answers, &files, &host);
 
     if dry_run {
         let mut executor = DryRun(std::io::stdout());
@@ -111,7 +111,7 @@ fn headless(config: &PathBuf, dry_run: bool, yes: bool) -> Result<(), String> {
         .map_err(|e| e.to_string())
     } else {
         let total = plan.actions.len();
-        run_plan(&plan, &mut Live, |i, a| {
+        run_plan(&plan, &mut Live::stderr(), |i, a| {
             eprintln!("[{}/{total}] {}", i + 1, a.description);
         })
         .map_err(|e| e.to_string())

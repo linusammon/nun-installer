@@ -7,8 +7,9 @@ pub const NIXPKGS_URL: &str = "github:NixOS/nixpkgs/nixos-unstable";
 /// Default disko ref written into the generated flake.
 pub const DISKO_URL: &str = "github:nix-community/disko";
 
-/// Where the LUKS passphrase is staged for disko. Removed again after install.
-pub const LUKS_PASSWORD_PATH: &str = "/tmp/nun-luks-password";
+/// Where the LUKS passphrase is staged for disko, inside a root-only directory.
+/// Removed again after install.
+pub const LUKS_PASSWORD_PATH: &str = "/run/nun-installer/luks-password";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Boot {
@@ -28,6 +29,8 @@ pub struct Host {
     /// Flake input URLs for the generated flake.
     pub nixpkgs_url: String,
     pub disko_url: String,
+    /// nixpkgs checkout used to evaluate disko (`NIX_PATH`), if known.
+    pub nixpkgs_path: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -70,6 +73,9 @@ impl Host {
             state_version,
             nixpkgs_url: url("NUN_NIXPKGS_URL", NIXPKGS_URL),
             disko_url: url("NUN_DISKO_URL", DISKO_URL),
+            nixpkgs_path: std::env::var_os("NUN_NIXPKGS_PATH")
+                .filter(|v| !v.is_empty())
+                .map(Into::into),
         })
     }
 }
@@ -180,6 +186,7 @@ mod tests {
             state_version: "26.05".into(),
             nixpkgs_url: NIXPKGS_URL.into(),
             disko_url: DISKO_URL.into(),
+            nixpkgs_path: None,
         }
     }
 

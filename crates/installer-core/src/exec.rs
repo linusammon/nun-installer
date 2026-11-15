@@ -2,10 +2,11 @@
 //! the system, the dry-run one prints, tests use their own recorder.
 
 use crate::plan::{Action, ActionKind, Command, Content, Plan};
-use std::io::{self, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::io::{self, BufRead, BufReader, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::mpsc;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExecError {
@@ -59,8 +60,25 @@ impl<W: Write> Executor for DryRun<W> {
     }
 }
 
-/// Performs actions on the live system.
-pub struct Live;
+/// Performs actions on the live system. Output of spawned commands is captured
+/// line by line and handed to the sink, never written to the terminal directly,
+/// so a full-screen UI stays intact.
+pub struct Live {
+    sink: Box<dyn FnMut(&str)>,
+}
+
+impl Live {
+    pub fn new(sink: impl FnMut(&str) + 'static) -> Self {
+        Self {
+            sink: Box::new(sink),
+        }
+    }
+
+    /// Forward command output to stderr.
+    pub fn stderr() -> Self {
+        Self::new(|line| eprintln!("    {line}"))
+    }
+}
 
 impl Executor for Live {
     fn execute(&mut self, action: &Action) -> Result<(), ExecError> {
@@ -69,7 +87,8 @@ impl Executor for Live {
             source,
         };
         match &action.kind {
-            ActionKind::Run(cmd) => run_command(action, cmd),
+            ActionKind::Run(cmd) => run_command(action, cmd, &mut *self.sink),
+            ActionKind::CreateDir { path, mode } => create_dir(path, *mode).map_err(io_err),
             ActionKind::WriteFile {
                 path,
                 content,
@@ -86,25 +105,69 @@ impl Executor for Live {
     }
 }
 
-fn run_command(action: &Action, cmd: &Command) -> Result<(), ExecError> {
+fn run_command(
+    action: &Action,
+    cmd: &Command,
+    sink: &mut dyn FnMut(&str),
+) -> Result<(), ExecError> {
     let io_err = |source| ExecError::Io {
         description: action.description.clone(),
         source,
     };
     let mut child = std::process::Command::new(&cmd.program)
         .args(&cmd.args)
+        .envs(cmd.env.iter().map(|(k, v)| (k, v)))
         .stdin(if cmd.stdin.is_some() {
             Stdio::piped()
         } else {
             Stdio::null()
         })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(io_err)?;
+
     if let (Some(secret), Some(mut stdin)) = (&cmd.stdin, child.stdin.take()) {
         stdin
             .write_all(secret.expose().as_bytes())
             .map_err(io_err)?;
     }
+
+    let (tx, rx) = mpsc::channel::<String>();
+    let readers: Vec<_> = [
+        child
+            .stdout
+            .take()
+            .map(|s| Box::new(s) as Box<dyn io::Read + Send>),
+        child
+            .stderr
+            .take()
+            .map(|s| Box::new(s) as Box<dyn io::Read + Send>),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|stream| {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stream).split(b'\n').map_while(Result::ok) {
+                if tx
+                    .send(String::from_utf8_lossy(&line).into_owned())
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+    })
+    .collect();
+    drop(tx);
+    for line in rx {
+        sink(&line);
+    }
+    for r in readers {
+        let _ = r.join();
+    }
+
     let status = child.wait().map_err(io_err)?;
     if status.success() {
         Ok(())
@@ -117,6 +180,11 @@ fn run_command(action: &Action, cmd: &Command) -> Result<(), ExecError> {
     }
 }
 
+fn create_dir(path: &Path, mode: u32) -> io::Result<()> {
+    std::fs::create_dir_all(path)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+}
+
 fn write_file(path: &Path, data: &str, mode: u32) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -127,6 +195,8 @@ fn write_file(path: &Path, data: &str, mode: u32) -> io::Result<()> {
         .truncate(true)
         .mode(mode)
         .open(path)?;
+    // `mode` only applies when the file is created; enforce it for existing files too.
+    file.set_permissions(std::fs::Permissions::from_mode(mode))?;
     file.write_all(data.as_bytes())
 }
 
@@ -147,6 +217,10 @@ mod tests {
     use super::*;
     use crate::plan::Content;
     use crate::secret::Secret;
+
+    fn live() -> Live {
+        Live::new(|_| {})
+    }
 
     #[derive(Default)]
     struct Recorder {
@@ -246,16 +320,94 @@ mod tests {
             },
             cleanup: false,
         };
-        Live.execute(&write).unwrap();
+        live().execute(&write).unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "hi");
         let rm = Action {
             description: "rm".into(),
             kind: ActionKind::Remove(dir.clone()),
             cleanup: true,
         };
-        Live.execute(&rm).unwrap();
+        live().execute(&rm).unwrap();
         assert!(!dir.exists());
-        Live.execute(&rm).unwrap();
+        live().execute(&rm).unwrap();
+    }
+
+    #[test]
+    fn live_captures_stdout_and_stderr_and_env() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let lines = Rc::new(RefCell::new(Vec::new()));
+        let sink = lines.clone();
+        let mut exec = Live::new(move |l| sink.borrow_mut().push(l.to_owned()));
+        let a = Action {
+            description: "echo".into(),
+            kind: ActionKind::Run(
+                Command::new("sh", ["-c", "echo out; echo err >&2; echo \"$NUN_T\""])
+                    .with_env("NUN_T", "env-ok"),
+            ),
+            cleanup: false,
+        };
+        exec.execute(&a).unwrap();
+        let mut got = lines.borrow().clone();
+        got.sort();
+        assert_eq!(got, ["env-ok", "err", "out"]);
+    }
+
+    #[test]
+    fn live_feeds_stdin_to_command() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let lines = Rc::new(RefCell::new(Vec::new()));
+        let sink = lines.clone();
+        let mut exec = Live::new(move |l| sink.borrow_mut().push(l.to_owned()));
+        let a = Action {
+            description: "cat".into(),
+            kind: ActionKind::Run(
+                Command::new("cat", Vec::<String>::new()).with_stdin("hi\n".into()),
+            ),
+            cleanup: false,
+        };
+        exec.execute(&a).unwrap();
+        assert_eq!(*lines.borrow(), ["hi"]);
+    }
+
+    #[test]
+    fn secret_files_are_private_even_if_they_existed() {
+        let dir = std::env::temp_dir().join(format!("nun-mode-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("s");
+        std::fs::write(&file, "old").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let a = Action {
+            description: "w".into(),
+            kind: ActionKind::WriteFile {
+                path: file.clone(),
+                content: Content::Secret(Secret::new("new")),
+                mode: 0o600,
+            },
+            cleanup: false,
+        };
+        live().execute(&a).unwrap();
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn create_dir_sets_mode() {
+        let dir = std::env::temp_dir().join(format!("nun-dir-test-{}", std::process::id()));
+        let a = Action {
+            description: "d".into(),
+            kind: ActionKind::CreateDir {
+                path: dir.clone(),
+                mode: 0o700,
+            },
+            cleanup: false,
+        };
+        live().execute(&a).unwrap();
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(mode, 0o700);
     }
 
     #[test]
@@ -266,7 +418,7 @@ mod tests {
             cleanup: false,
         };
         assert!(matches!(
-            Live.execute(&a),
+            live().execute(&a),
             Err(ExecError::CommandFailed { .. })
         ));
     }

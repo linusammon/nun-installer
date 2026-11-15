@@ -3,7 +3,7 @@
 //! recorded in tests.
 
 use crate::answers::Answers;
-use crate::generate::{GeneratedFiles, LUKS_PASSWORD_PATH};
+use crate::generate::{GeneratedFiles, Host, LUKS_PASSWORD_PATH};
 use crate::secret::Secret;
 use std::fmt;
 use std::path::PathBuf;
@@ -12,12 +12,14 @@ pub const MOUNT_ROOT: &str = "/mnt";
 /// Config dir inside the target system.
 pub const CONFIG_DIR: &str = "/mnt/etc/nixos";
 /// Where the generated files are staged so disko can run before `/mnt` exists.
-pub const STAGING_DIR: &str = "/tmp/nun-installer";
+pub const STAGING_DIR: &str = "/run/nun-installer";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Command {
     pub program: String,
     pub args: Vec<String>,
+    /// Extra environment variables for the process.
+    pub env: Vec<(String, String)>,
     /// Written to the process's stdin, if set.
     pub stdin: Option<Secret>,
 }
@@ -31,8 +33,14 @@ impl Command {
         Self {
             program: program.into(),
             args: args.into_iter().map(Into::into).collect(),
+            env: Vec::new(),
             stdin: None,
         }
+    }
+
+    pub fn with_env(mut self, key: &str, value: &str) -> Self {
+        self.env.push((key.into(), value.into()));
+        self
     }
 
     pub fn with_stdin(mut self, stdin: Secret) -> Self {
@@ -50,6 +58,11 @@ pub enum Content {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActionKind {
     Run(Command),
+    /// Creates a directory (and parents) and sets its mode.
+    CreateDir {
+        path: PathBuf,
+        mode: u32,
+    },
     WriteFile {
         path: PathBuf,
         content: Content,
@@ -72,7 +85,11 @@ impl fmt::Display for Action {
         writeln!(f, "# {}", self.description)?;
         match &self.kind {
             ActionKind::Run(c) => {
-                write!(f, "$ {}", c.program)?;
+                write!(f, "$ ")?;
+                for (k, v) in &c.env {
+                    write!(f, "{k}={v} ")?;
+                }
+                write!(f, "{}", c.program)?;
                 for a in &c.args {
                     write!(f, " {a}")?;
                 }
@@ -96,6 +113,9 @@ impl fmt::Display for Action {
                     }
                     Content::Secret(_) => writeln!(f, "  | <redacted>"),
                 }
+            }
+            ActionKind::CreateDir { path, mode } => {
+                writeln!(f, "mkdir -m {mode:o} {}", path.display())
             }
             ActionKind::Remove(p) => writeln!(f, "rm -rf {}", p.display()),
         }
@@ -128,9 +148,17 @@ fn write(description: &str, path: String, content: &str) -> Action {
 
 /// Build the full install plan. Answers must already be validated and
 /// the files rendered from them.
-pub fn build_plan(a: &Answers, files: &GeneratedFiles) -> Plan {
+pub fn build_plan(a: &Answers, files: &GeneratedFiles, host: &Host) -> Plan {
     let mut actions = Vec::new();
     let staged_disko = format!("{STAGING_DIR}/disko.nix");
+
+    actions.push(action(
+        "Create private staging directory",
+        ActionKind::CreateDir {
+            path: STAGING_DIR.into(),
+            mode: 0o700,
+        },
+    ));
 
     if a.disk.encrypt {
         let password = a
@@ -153,22 +181,28 @@ pub fn build_plan(a: &Answers, files: &GeneratedFiles) -> Plan {
         staged_disko.clone(),
         &files.disko_nix,
     ));
+    // disko evaluates `<nixpkgs>`, so point it at ours instead of relying on the
+    // live system having a channel or NIX_PATH.
+    let mut disko = Command::new(
+        "disko",
+        [
+            "--mode",
+            "destroy,format,mount",
+            "--yes-wipe-all-disks",
+            "--root-mountpoint",
+            MOUNT_ROOT,
+            &staged_disko,
+        ],
+    );
+    if let Some(path) = &host.nixpkgs_path {
+        disko = disko.with_env("NIX_PATH", &format!("nixpkgs={}", path.display()));
+    }
     actions.push(action(
         &format!(
             "Partition, format and mount {} (WIPES THE DISK)",
             a.disk.device
         ),
-        ActionKind::Run(Command::new(
-            "disko",
-            [
-                "--mode",
-                "destroy,format,mount",
-                "--yes-wipe-all-disks",
-                "--root-mountpoint",
-                MOUNT_ROOT,
-                &staged_disko,
-            ],
-        )),
+        ActionKind::Run(disko),
     ));
     actions.push(action(
         "Generate hardware configuration",
@@ -291,8 +325,9 @@ mod tests {
             state_version: "26.05".into(),
             nixpkgs_url: crate::generate::NIXPKGS_URL.into(),
             disko_url: crate::generate::DISKO_URL.into(),
+            nixpkgs_path: Some("/nix/store/fake-nixpkgs".into()),
         };
-        build_plan(a, &render(a, &host).unwrap())
+        build_plan(a, &render(a, &host).unwrap(), &host)
     }
 
     fn descriptions(p: &Plan) -> Vec<&str> {
@@ -305,6 +340,7 @@ mod tests {
         assert_eq!(
             descriptions(&p),
             [
+                "Create private staging directory",
                 "Stage disk layout",
                 "Partition, format and mount /dev/vda (WIPES THE DISK)",
                 "Generate hardware configuration",
@@ -322,7 +358,7 @@ mod tests {
     #[test]
     fn encrypted_plan_stages_and_removes_passphrase() {
         let p = plan_for(&answers(true));
-        assert_eq!(p.actions[0].description, "Stage LUKS passphrase for disko");
+        assert_eq!(p.actions[1].description, "Stage LUKS passphrase for disko");
         let last = p.actions.last().unwrap();
         assert!(last.cleanup);
         assert_eq!(last.kind, ActionKind::Remove(LUKS_PASSWORD_PATH.into()));
@@ -341,6 +377,35 @@ mod tests {
     }
 
     #[test]
+    fn staging_dir_is_private_and_first() {
+        let p = plan_for(&answers(true));
+        assert_eq!(
+            p.actions[0].kind,
+            ActionKind::CreateDir {
+                path: STAGING_DIR.into(),
+                mode: 0o700
+            }
+        );
+        assert!(LUKS_PASSWORD_PATH.starts_with(STAGING_DIR));
+    }
+
+    #[test]
+    fn disko_gets_nix_path_from_host() {
+        let p = plan_for(&answers(false));
+        let ActionKind::Run(c) = &p.actions[2].kind else {
+            panic!("expected command");
+        };
+        assert_eq!(c.program, "disko");
+        assert_eq!(
+            c.env,
+            [(
+                "NIX_PATH".to_owned(),
+                "nixpkgs=/nix/store/fake-nixpkgs".to_owned()
+            )]
+        );
+    }
+
+    #[test]
     fn secrets_never_printed() {
         let text = plan_for(&answers(true)).to_string();
         assert!(!text.contains("correct horse"));
@@ -351,7 +416,7 @@ mod tests {
     #[test]
     fn password_goes_through_stdin_not_args() {
         let p = plan_for(&answers(false));
-        let ActionKind::Run(c) = &p.actions[8].kind else {
+        let ActionKind::Run(c) = &p.actions[9].kind else {
             panic!("expected command");
         };
         assert_eq!(c.program, "nixos-enter");

@@ -92,7 +92,7 @@ expression: all(&out)
           content = {
             type = "luks";
             name = "cryptroot";
-            passwordFile = "/tmp/nun-luks-password";
+            passwordFile = "/run/nun-installer/luks-password";
             settings.allowDiscards = true;
             content = {
               type = "btrfs";
