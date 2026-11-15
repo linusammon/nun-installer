@@ -27,11 +27,6 @@ let
             # UEFI, like most real machines.
             useEFIBoot = true;
           };
-
-          nix.settings.experimental-features = [
-            "nix-command"
-            "flakes"
-          ];
           # Log in as root on the first console; the installer starts there.
           services.getty.autologinUser = "root";
         }
@@ -59,9 +54,9 @@ in
       fi
 
       # The installer's own disk is throwaway; only the target disk is kept.
-      root="$(mktemp -u /tmp/nun-installer-root.XXXXXX.qcow2)"
-      trap 'rm -f "$root"' EXIT
-      export NIX_DISK_IMAGE="$root"
+      scratch="$(mktemp -d)"
+      trap 'rm -rf "$scratch"' EXIT
+      export NIX_DISK_IMAGE="$scratch/root.qcow2"
       export QEMU_OPTS="-drive file=$disk,if=virtio,format=qcow2,cache=writeback ''${QEMU_OPTS:-}"
       ${runVm}
     '';

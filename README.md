@@ -6,7 +6,8 @@ Status: early. The interactive installer, headless mode and VM tests work.
 
 ## What it does
 
-Takes a handful of answers (disk, user, hostname, locale, timezone, keyboard),
+Takes a handful of answers (disk, user, locale, timezone, keyboard; the hostname is
+fixed to `nun` interactively and can be set in headless answers),
 generates a flake (`flake.nix`, `configuration.nix`, `disko.nix`) that enables
 the three nun modules, then partitions the disk with
 [disko](https://github.com/nix-community/disko) and runs `nixos-install`.
@@ -34,10 +35,11 @@ cargo test
 nix flake check         # build, clippy, fmt, tests and the VM tests
 ```
 
-The VM tests (`vm-install-plain`, `vm-install-encrypted`, `vm-install-tui`) install
-onto a blank disk inside a NixOS test VM and then boot the result. The last one
-drives the interactive installer through tmux. They need KVM. Run one
-with:
+The VM tests (`vm-install-{plain,encrypted,pinned,tui,tui-user}`) install onto a
+blank disk inside a NixOS test VM and then boot the result. The `tui` ones drive the
+interactive installer through tmux, `tui-user` starting it as an unprivileged user
+like on the official ISO. `iso-boot` boots the ISO from a CD and checks that the
+installer comes up. They need KVM. Run one with:
 
 ```sh
 nix build .#checks.x86_64-linux.vm-install-encrypted -L
@@ -69,6 +71,11 @@ so it downloads the system. Both need KVM.
 - `crates/installer-core`: answers, validation, config generation, install plan, executors, safety checks. No UI.
 - `crates/installer-tui`: the `nun-installer` binary.
 - `nix/tests`: the VM tests.
+
+## ISO
+
+`nix build .#iso-online` builds a bootable ISO that logs in on the first console and
+starts the installer. It fetches what it installs, so it needs a network connection.
 
 ## Pinned inputs
 

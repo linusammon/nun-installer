@@ -20,11 +20,6 @@ nixpkgs.lib.nixosSystem {
         networking.hostName = "nun-installer";
         image.baseName = lib.mkForce "nun-installer-${system}";
         isoImage.volumeID = "NUN_INSTALLER";
-
-        nix.settings.experimental-features = [
-          "nix-command"
-          "flakes"
-        ];
       }
     )
     # The profile logs `nixos` in on the first console and the installer starts
