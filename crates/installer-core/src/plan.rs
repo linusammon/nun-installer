@@ -319,20 +319,15 @@ pub fn build_plan(a: &Answers, files: &GeneratedFiles, host: &Host) -> Result<Pl
     Ok(Plan { actions })
 }
 
-impl fmt::Display for Plan {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (i, a) in self.actions.iter().enumerate() {
-            writeln!(f, "[{}/{}] {a}", i + 1, self.actions.len())?;
-        }
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::answers::*;
     use crate::generate::{render, Host};
+
+    fn text_of(p: &Plan) -> String {
+        p.actions.iter().map(ToString::to_string).collect()
+    }
 
     fn answers(encrypt: bool) -> Answers {
         let mut a = Answers::example();
@@ -513,7 +508,7 @@ mod tests {
     #[test]
     fn the_dry_run_command_line_is_valid_shell_with_quoting_where_needed() {
         let p = plan_for(&answers(false));
-        let text = p.to_string();
+        let text = text_of(&p);
         assert!(
             text.contains("$ nix --extra-experimental-features 'nix-command flakes' flake lock /mnt/etc/nixos"),
             "{text}"
@@ -555,7 +550,7 @@ mod tests {
 
     #[test]
     fn secrets_never_printed() {
-        let text = plan_for(&answers(true)).to_string();
+        let text = text_of(&plan_for(&answers(true)));
         assert!(!text.contains("correct horse"));
         assert!(!text.contains("$y$j9T$abc$def"));
         assert!(text.contains("<redacted>"));

@@ -179,7 +179,28 @@ pub fn check_device(d: &str) -> Result<(), String> {
 }
 
 pub fn check_username(n: &str) -> Result<(), String> {
-    const RESERVED: &[&str] = &["root", "nobody", "nixbld"];
+    // Accounts NixOS or the nun stack define themselves; a login user of the same
+    // name makes the configuration fail to evaluate, after the disk is wiped.
+    const RESERVED: &[&str] = &[
+        "root",
+        "nobody",
+        "messagebus",
+        "nscd",
+        "rpc",
+        "polkituser",
+        "wpa_supplicant",
+        "nm-iodine",
+        "nm-openvpn",
+        "avahi",
+        "colord",
+        "dhcpcd",
+        "geoclue",
+        "greeter",
+        "rtkit",
+        "upower",
+        "uuidd",
+    ];
+    const RESERVED_PREFIXES: &[&str] = &["nixbld", "systemd-"];
     if n.is_empty() || n.len() > 32 {
         return Err("must be 1-32 characters".into());
     }
@@ -191,7 +212,7 @@ pub fn check_username(n: &str) -> Result<(), String> {
     if !chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '-')) {
         return Err("may only contain a-z, 0-9, '_' and '-'".into());
     }
-    if RESERVED.contains(&n) {
+    if RESERVED.contains(&n) || RESERVED_PREFIXES.iter().any(|p| n.starts_with(p)) {
         return Err(format!("'{n}' is reserved"));
     }
     Ok(())
@@ -247,6 +268,30 @@ mod tests {
             .into_iter()
             .map(|e| e.field)
             .collect()
+    }
+
+    #[test]
+    fn names_of_accounts_nixos_defines_are_refused() {
+        for n in [
+            "root",
+            "nobody",
+            "polkituser",
+            "messagebus",
+            "nixbld1",
+            "nixbld32",
+            "systemd-network",
+            "systemd-resolve",
+            "wpa_supplicant",
+            "nm-openvpn",
+            "rpc",
+        ] {
+            let mut a = good();
+            a.user.name = n.into();
+            assert_eq!(fields(&a), [Field::UserName], "{n} should be refused");
+        }
+        let mut a = good();
+        a.user.name = "alice".into();
+        assert!(validate(&a, &Catalog::example()).is_empty());
     }
 
     #[test]

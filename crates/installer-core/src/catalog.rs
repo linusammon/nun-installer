@@ -168,17 +168,16 @@ fn parse_xkb(src: &str) -> Vec<Layout> {
 }
 
 #[cfg(test)]
-pub(crate) fn test_catalog() -> Catalog {
-    Catalog::from_sources(
+mod tests {
+    use super::*;
+
+    fn test_catalog() -> Catalog {
+        Catalog::from_sources(
         "# c\nDE\t+5230+01322\tEurope/Berlin\nCH\t+4723+00832\tEurope/Zurich\n",
         "# c\nSUPPORTED-LOCALES=\\\nde_CH.UTF-8/UTF-8 \\\nde_CH/ISO-8859-1 \\\nen_US.UTF-8/UTF-8 \\\n",
         "! model\n  pc105  Generic 105-key PC\n\n! layout\n  us  English (US)\n  ch  German (Switzerland)\n\n! variant\n  intl  us: English (US, intl., with dead keys)\n  de_nodeadkeys  ch: German (Switzerland, no dead keys)\n  fr  ch: French (Switzerland)\n\n! option\n  grp  Switching\n",
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
+    }
 
     #[test]
     fn parses_timezones() {

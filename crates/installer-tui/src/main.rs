@@ -84,7 +84,15 @@ fn interactive() -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
-    let args = match parse_args(std::env::args().skip(1)) {
+    let Some(raw) = std::env::args_os()
+        .skip(1)
+        .map(|a| a.into_string().ok())
+        .collect::<Option<Vec<String>>>()
+    else {
+        eprintln!("error: arguments must be valid UTF-8");
+        return ExitCode::from(2);
+    };
+    let args = match parse_args(raw.into_iter()) {
         Parsed::Run(a) => a,
         Parsed::Exit(code) => return code,
     };
