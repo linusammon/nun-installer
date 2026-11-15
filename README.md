@@ -20,6 +20,7 @@ The disk layout is fixed: GPT, an ESP (UEFI) or BIOS boot partition, and btrfs
 ```sh
 nun-installer --config answers.json --dry-run   # print the plan and generated files
 nun-installer --config answers.json --yes       # install, wipes the target disk
+nun-installer --config answers.json --render DIR # write the generated files to DIR, change nothing
 ```
 
 Without `--config` the interactive installer starts (it needs a terminal). When not
@@ -39,7 +40,8 @@ The VM tests (`vm-install-{plain,encrypted,pinned,tui,tui-user}`) install onto a
 blank disk inside a NixOS test VM and then boot the result. The `tui` ones drive the
 interactive installer through tmux, `tui-user` starting it as an unprivileged user
 like on the official ISO. `iso-boot` boots the ISO from a CD and checks that the
-installer comes up. They need KVM. Run one with:
+installer comes up. `usernames` checks that every account NixOS
+defines for the generated configuration is refused as a username. They need KVM. Run one with:
 
 ```sh
 nix build .#checks.x86_64-linux.vm-install-encrypted -L
@@ -96,6 +98,7 @@ to system paths or must be set by hand:
 | `NUN_STATE_VERSION` | `system.stateVersion` for the new system (required) |
 | `NUN_NIXPKGS_PATH` | nixpkgs used to evaluate disko |
 | `NUN_DISKO_PATH` | disko source the pinned lock names; kept in the closure so it resolves offline |
+| `NUN_BOOT` | `uefi` or `bios`, instead of detecting it (for `--render` away from the target machine) |
 | `NUN_NIXPKGS_URL`, `NUN_DISKO_URL` | flake inputs written into the generated flake |
 | `NUN_LOCK_FILE` | the installer's `flake.lock`, reduced to nixpkgs and disko and written to `/etc/nixos` |
 | `NUN_CKBCOMP`, `NUN_LOADKEYS` | tools that load the chosen keyboard layout into the console |

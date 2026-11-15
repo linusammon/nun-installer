@@ -139,6 +139,12 @@
           tests = c.craneLib.cargoTest (c.commonArgs // { inherit (c) cargoArtifacts; });
         }
         // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
+          usernames = import ./nix/tests/usernames.nix {
+            inherit pkgs disko;
+            inherit (self.packages.${system}) installer;
+            nixpkgsSrc = nixpkgs.outPath;
+            nixpkgsNarHash = nixpkgs.narHash;
+          };
           iso-boot = import ./nix/tests/iso.nix {
             inherit pkgs nixpkgs system;
             inherit (self.packages.${system}) installer;

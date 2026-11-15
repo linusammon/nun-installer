@@ -58,123 +58,19 @@ let
     ]
   );
 
-  # Mirrors what the installer generates. Nothing here is installed: building it
-  # puts the closure of the target system and of the disko scripts into the
-  # VM's store, which has no network to fetch anything.
-  # Loaded the same way the VM loads it (as a path flake) so that documentation
-  # derivations, which embed the revision, come out identical.
-  nixpkgsFlake = builtins.getFlake (
-    builtins.unsafeDiscardStringContext "path:${nixpkgsSrc}?narHash=${nixpkgsNarHash}"
-  );
-  target = nixpkgsFlake.lib.nixosSystem {
-    inherit system;
-    modules = [ targetModule ];
-  };
-  targetModule =
-    { ... }:
-    let
-      mountOptions = [
-        "compress=zstd"
-        "noatime"
-      ];
-      btrfs = {
-        type = "btrfs";
-        extraArgs = [ "-f" ];
-        subvolumes = {
-          "/root" = {
-            mountpoint = "/";
-            inherit mountOptions;
-          };
-          "/home" = {
-            mountpoint = "/home";
-            inherit mountOptions;
-          };
-          "/nix" = {
-            mountpoint = "/nix";
-            inherit mountOptions;
-          };
-          "/swap" = {
-            mountpoint = "/.swapvol";
-            swap.swapfile.size = "512M";
-          };
-        };
-      };
-    in
-    {
-      imports = [ disko.nixosModules.disko ];
-
-      disko.devices.disk.main = {
-        type = "disk";
-        device = "/dev/vda";
-        content = {
-          type = "gpt";
-          partitions = {
-            ESP = {
-              size = "512M";
-              type = "EF00";
-              content = {
-                type = "filesystem";
-                format = "vfat";
-                mountpoint = "/boot";
-                mountOptions = [ "umask=0077" ];
-              };
-            };
-            root = {
-              size = "100%";
-              content =
-                if encrypt then
-                  {
-                    type = "luks";
-                    name = "cryptroot";
-                    passwordFile = "/run/nun-installer/luks-password";
-                    settings.allowDiscards = true;
-                    content = btrfs;
-                  }
-                else
-                  btrfs;
-            };
-          };
-        };
-      };
-
-      boot.loader.systemd-boot.enable = true;
-      boot.loader.efi.canTouchEfiVariables = true;
-      boot.initrd.availableKernelModules = [
-        "virtio_pci"
-        "virtio_blk"
-        "ahci"
-        "xhci_pci"
-        "sd_mod"
-      ];
-
-      networking.hostName = hostname;
-      i18n.defaultLocale = "en_US.UTF-8";
-      time.timeZone = "Europe/Berlin";
-      services.xserver.xkb = {
-        layout = "ch";
-        variant = "fr";
-      };
-      console.useXkbConfig = true;
-      users.users.alice = {
-        isNormalUser = true;
-        extraGroups = [
-          "wheel"
-          "networkmanager"
-        ];
-      };
-      programs.noctalia = {
-        enable = true;
-        systemd.enable = true;
-        recommendedServices.enable = true;
-      };
-      programs.umbriel.enable = true;
-      services.displayManager.noctalia-greeter.enable = true;
-      nix.settings.experimental-features = [
-        "nix-command"
-        "flakes"
-      ];
-      system.stateVersion = lib.trivial.release;
-    };
+  inherit
+    (import ../target.nix {
+      inherit
+        pkgs
+        installer
+        disko
+        nixpkgsSrc
+        nixpkgsNarHash
+        answersFile
+        ;
+    })
+    target
+    ;
   targetBuild = target.config.system.build;
 in
 pkgs.testers.runNixOSTest {
