@@ -3,5 +3,5 @@
 pub mod answers;
 pub mod validate;
 
-pub use answers::{Answers, Disk, Filesystem, Nun, System, User, SCHEMA_VERSION};
+pub use answers::{Answers, Disk, Filesystem, System, User, SCHEMA_VERSION};
 pub use validate::{validate, Field, ValidationError};

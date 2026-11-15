@@ -5,12 +5,16 @@ use crate::answers::{Answers, SCHEMA_VERSION};
 pub enum Field {
     SchemaVersion,
     DiskDevice,
+    SwapSize,
+    EncryptionPassword,
     UserName,
     UserPasswordHash,
+    SudoPasswordHash,
     Hostname,
     Locale,
     Timezone,
     KeyboardLayout,
+    KeyboardVariant,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -44,11 +48,26 @@ pub fn validate(a: &Answers) -> Vec<ValidationError> {
     if let Err(m) = check_device(&a.disk.device) {
         errs.push(err(Field::DiskDevice, m));
     }
+    if a.disk.swap_size_mib > MAX_SWAP_MIB {
+        errs.push(err(
+            Field::SwapSize,
+            format!("must be at most {MAX_SWAP_MIB} MiB"),
+        ));
+    }
+    if let Err(m) = check_encryption(a.disk.encrypt, a.disk.encryption_password.as_deref()) {
+        errs.push(err(Field::EncryptionPassword, m));
+    }
     if let Err(m) = check_username(&a.user.name) {
         errs.push(err(Field::UserName, m));
     }
     if let Err(m) = check_password_hash(&a.user.password_hash) {
         errs.push(err(Field::UserPasswordHash, m));
+    }
+    if let Err(m) = check_sudo_password(
+        a.user.sudo_same_password,
+        a.user.sudo_password_hash.as_deref(),
+    ) {
+        errs.push(err(Field::SudoPasswordHash, m));
     }
     if let Err(m) = check_hostname(&a.system.hostname) {
         errs.push(err(Field::Hostname, m));
@@ -62,7 +81,47 @@ pub fn validate(a: &Answers) -> Vec<ValidationError> {
     if let Err(m) = check_keyboard(&a.system.keyboard_layout) {
         errs.push(err(Field::KeyboardLayout, m));
     }
+    if let Some(v) = &a.system.keyboard_variant {
+        if let Err(m) = check_keyboard_variant(v) {
+            errs.push(err(Field::KeyboardVariant, m));
+        }
+    }
     errs
+}
+
+const MAX_SWAP_MIB: u32 = 1024 * 1024;
+const MIN_ENCRYPTION_PASSWORD_LEN: usize = 8;
+
+fn check_encryption(encrypt: bool, password: Option<&str>) -> Result<(), String> {
+    match (encrypt, password) {
+        (true, None) => Err("required when encryption is enabled".into()),
+        (true, Some(p)) if p.chars().count() < MIN_ENCRYPTION_PASSWORD_LEN => Err(format!(
+            "must be at least {MIN_ENCRYPTION_PASSWORD_LEN} characters"
+        )),
+        (false, Some(_)) => Err("must not be set when encryption is disabled".into()),
+        _ => Ok(()),
+    }
+}
+
+fn check_sudo_password(same: bool, hash: Option<&str>) -> Result<(), String> {
+    match (same, hash) {
+        (false, None) => Err("required when sudo uses a different password".into()),
+        (false, Some(h)) => check_password_hash(h),
+        (true, Some(_)) => Err("must not be set when sudo reuses the user password".into()),
+        (true, None) => Ok(()),
+    }
+}
+
+fn check_keyboard_variant(v: &str) -> Result<(), String> {
+    if !v.is_empty()
+        && v.len() <= 32
+        && v.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '-'))
+    {
+        Ok(())
+    } else {
+        Err("expected an XKB variant like dvorak or de".into())
+    }
 }
 
 fn check_device(d: &str) -> Result<(), String> {
@@ -190,19 +249,23 @@ mod tests {
             disk: Disk {
                 device: "/dev/nvme0n1".into(),
                 filesystem: Filesystem::Ext4,
+                swap_size_mib: 4096,
+                encrypt: false,
+                encryption_password: None,
             },
             user: User {
                 name: "alice".into(),
                 password_hash: "$y$j9T$abc$def".into(),
-                sudo: true,
+                sudo_same_password: true,
+                sudo_password_hash: None,
             },
             system: System {
                 hostname: "nun-box".into(),
                 locale: "en_US.UTF-8".into(),
                 timezone: "Europe/Berlin".into(),
-                keyboard_layout: "de".into(),
+                keyboard_layout: "ch".into(),
+                keyboard_variant: Some("de".into()),
             },
-            nun: Nun::default(),
         }
     }
 
@@ -246,6 +309,52 @@ mod tests {
             let mut a = good();
             a.user.password_hash = h.into();
             assert_eq!(fields(&a), [Field::UserPasswordHash], "{h}");
+        }
+    }
+
+    #[test]
+    fn encryption_password_rules() {
+        let mut a = good();
+        a.disk.encrypt = true;
+        assert_eq!(fields(&a), [Field::EncryptionPassword]);
+        a.disk.encryption_password = Some("short".into());
+        assert_eq!(fields(&a), [Field::EncryptionPassword]);
+        a.disk.encryption_password = Some("long-enough-pass".into());
+        assert!(validate(&a).is_empty());
+        a.disk.encrypt = false;
+        assert_eq!(fields(&a), [Field::EncryptionPassword]);
+    }
+
+    #[test]
+    fn sudo_password_rules() {
+        let mut a = good();
+        a.user.sudo_same_password = false;
+        assert_eq!(fields(&a), [Field::SudoPasswordHash]);
+        a.user.sudo_password_hash = Some("plain".into());
+        assert_eq!(fields(&a), [Field::SudoPasswordHash]);
+        a.user.sudo_password_hash = Some("$6$salt$hash".into());
+        assert!(validate(&a).is_empty());
+        a.user.sudo_same_password = true;
+        assert_eq!(fields(&a), [Field::SudoPasswordHash]);
+    }
+
+    #[test]
+    fn swap_size_limit() {
+        let mut a = good();
+        a.disk.swap_size_mib = 0;
+        assert!(validate(&a).is_empty());
+        a.disk.swap_size_mib = u32::MAX;
+        assert_eq!(fields(&a), [Field::SwapSize]);
+    }
+
+    #[test]
+    fn keyboard_variant() {
+        let mut a = good();
+        a.system.keyboard_variant = None;
+        assert!(validate(&a).is_empty());
+        for v in ["", "De", "a b"] {
+            a.system.keyboard_variant = Some(v.into());
+            assert_eq!(fields(&a), [Field::KeyboardVariant], "{v}");
         }
     }
 

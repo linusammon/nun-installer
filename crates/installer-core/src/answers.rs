@@ -10,8 +10,6 @@ pub struct Answers {
     pub disk: Disk,
     pub user: User,
     pub system: System,
-    #[serde(default)]
-    pub nun: Nun,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -21,6 +19,14 @@ pub struct Disk {
     pub device: String,
     #[serde(default)]
     pub filesystem: Filesystem,
+    /// Swap size in MiB. `0` disables swap.
+    #[serde(default)]
+    pub swap_size_mib: u32,
+    #[serde(default)]
+    pub encrypt: bool,
+    /// LUKS passphrase. Required if and only if `encrypt` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption_password: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,14 +37,18 @@ pub enum Filesystem {
     Btrfs,
 }
 
+/// The user is always in `wheel`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct User {
     pub name: String,
     /// Crypt-style hash (yescrypt, sha512, ...). Plaintext is never stored.
     pub password_hash: String,
+    /// Reuse `password_hash` for sudo. If false, `sudo_password_hash` is required.
     #[serde(default = "default_true")]
-    pub sudo: bool,
+    pub sudo_same_password: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sudo_password_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,29 +59,11 @@ pub struct System {
     pub locale: String,
     /// e.g. `Europe/Berlin`.
     pub timezone: String,
-    /// XKB layout, e.g. `us` or `de`.
+    /// XKB layout, e.g. `us`, `de` or `ch`.
     pub keyboard_layout: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Nun {
-    #[serde(default = "default_true")]
-    pub noctalia: bool,
-    #[serde(default = "default_true")]
-    pub greeter: bool,
-    #[serde(default = "default_true")]
-    pub umbriel: bool,
-}
-
-impl Default for Nun {
-    fn default() -> Self {
-        Self {
-            noctalia: true,
-            greeter: true,
-            umbriel: true,
-        }
-    }
+    /// XKB variant, e.g. `de` for Swiss German (`ch` + `de`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keyboard_variant: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -92,13 +84,16 @@ mod tests {
                 "hostname": "nun",
                 "locale": "en_US.UTF-8",
                 "timezone": "Europe/Berlin",
-                "keyboard_layout": "de"
+                "keyboard_layout": "ch",
+                "keyboard_variant": "de"
             }
         }"#;
         let a: Answers = serde_json::from_str(json).unwrap();
         assert_eq!(a.disk.filesystem, Filesystem::Ext4);
-        assert!(a.user.sudo);
-        assert_eq!(a.nun, Nun::default());
+        assert_eq!(a.disk.swap_size_mib, 0);
+        assert!(!a.disk.encrypt);
+        assert!(a.user.sudo_same_password);
+        assert_eq!(a.system.keyboard_variant.as_deref(), Some("de"));
     }
 
     #[test]
