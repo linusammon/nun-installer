@@ -16,7 +16,7 @@ struct StepCounter(usize);
 
 impl StepCounter {
     fn number(&mut self, action: &Action) -> Option<usize> {
-        if action.cleanup {
+        if !action.is_step() {
             return None;
         }
         let n = self.0;

@@ -106,10 +106,12 @@ mod tests {
 
     /// Another test forking while a script is still open for writing makes the
     /// first exec fail with ETXTBSY; it clears within moments, so retry.
+    const ETXTBSY: i32 = 26;
+
     fn apply(tools: &KeymapTools, layout: &str, variant: Option<&str>) -> Result<(), KeymapError> {
         for _ in 0..50 {
             match apply_console_keymap(tools, layout, variant) {
-                Err(KeymapError::Run { source, .. }) if source.raw_os_error() == Some(26) => {
+                Err(KeymapError::Run { source, .. }) if source.raw_os_error() == Some(ETXTBSY) => {
                     std::thread::sleep(std::time::Duration::from_millis(20));
                 }
                 other => return other,

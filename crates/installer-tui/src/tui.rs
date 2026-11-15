@@ -33,9 +33,15 @@ pub fn run(catalog: Catalog, host: Host) -> io::Result<()> {
     ratatui::restore();
 
     if result? {
-        let _ = std::process::Command::new("systemctl")
+        let rebooted = std::process::Command::new("systemctl")
             .arg("reboot")
-            .status();
+            .status()
+            .is_ok_and(|s| s.success());
+        if !rebooted {
+            return Err(io::Error::other(
+                "the installation finished, but `systemctl reboot` failed; reboot by hand",
+            ));
+        }
     }
     Ok(())
 }

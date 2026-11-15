@@ -29,11 +29,10 @@ pub struct InstallState {
 impl InstallState {
     pub fn for_plan(plan: &Plan) -> Self {
         Self {
-            // Cleanup runs even after a failure and is not something to watch.
             steps: plan
                 .actions
                 .iter()
-                .filter(|a| !a.cleanup)
+                .filter(|a| a.is_step())
                 .map(|a| (a.description.clone(), StepStatus::Pending))
                 .collect(),
             ..Self::default()

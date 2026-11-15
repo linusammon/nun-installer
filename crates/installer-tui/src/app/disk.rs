@@ -85,6 +85,10 @@ impl DiskForm {
         &self.errors
     }
 
+    pub fn fail(&mut self, message: impl Into<String>) {
+        self.errors.set(Target::Disk, message);
+    }
+
     pub fn fields(&self) -> Vec<DiskField> {
         let mut f = vec![DiskField::Disk, DiskField::Swap, DiskField::Encrypt];
         if self.encrypt {

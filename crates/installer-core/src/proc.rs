@@ -3,6 +3,7 @@
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
+use zeroize::Zeroizing;
 
 /// A path from an environment variable, or a default (usually a bare program
 /// name resolved through `PATH`).
@@ -12,7 +13,8 @@ pub(crate) fn env_path(var: &str, default: &str) -> PathBuf {
 
 /// Run `cmd` with `input` on its stdin and collect its output. The input is
 /// written on its own thread, so a child that produces a lot of output before
-/// it reads its stdin cannot deadlock us.
+/// it reads its stdin cannot deadlock us. The copy of `input` is wiped when
+/// the thread ends, so this is fine for secrets too.
 pub(crate) fn output_with_stdin(cmd: &mut Command, input: &[u8]) -> io::Result<Output> {
     let mut child = cmd
         .stdin(Stdio::piped())
@@ -20,7 +22,7 @@ pub(crate) fn output_with_stdin(cmd: &mut Command, input: &[u8]) -> io::Result<O
         .stderr(Stdio::piped())
         .spawn()?;
     let writer = child.stdin.take().map(|mut pipe| {
-        let data = input.to_vec();
+        let data = Zeroizing::new(input.to_vec());
         std::thread::spawn(move || {
             // The child may exit without reading everything; that is its call.
             let _ = pipe.write_all(&data);

@@ -92,6 +92,8 @@
           {
             vm-install = vm.install;
             vm-boot = vm.boot;
+            iso-online =
+              (import ./nix/iso.nix { inherit nixpkgs installer system; }).config.system.build.isoImage;
           }
         )
       );
@@ -123,6 +125,10 @@
           tests = c.craneLib.cargoTest (c.commonArgs // { inherit (c) cargoArtifacts; });
         }
         // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
+          iso-boot = import ./nix/tests/iso.nix {
+            inherit pkgs nixpkgs system;
+            inherit (self.packages.${system}) installer;
+          };
           vm-install-plain = import ./nix/tests/install.nix {
             inherit pkgs;
             inherit (self.packages.${system}) installer;

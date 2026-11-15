@@ -1,0 +1,41 @@
+# The installer as a bootable ISO: it starts the installer on the first console.
+# The online ISO fetches what it installs; the nixpkgs and disko the installed
+# system pins come from the installer's own lock.
+{
+  nixpkgs,
+  installer,
+  system,
+  extraModules ? [ ],
+}:
+nixpkgs.lib.nixosSystem {
+  inherit system;
+  modules = [
+    "${nixpkgs}/nixos/modules/installer/cd-dvd/installation-cd-minimal.nix"
+  ]
+  ++ extraModules
+  ++ [
+    (
+      { lib, ... }:
+      {
+        networking.hostName = "nun-installer";
+        image.baseName = lib.mkForce "nun-installer-${system}";
+        isoImage.volumeID = "NUN_INSTALLER";
+
+        nix.settings.experimental-features = [
+          "nix-command"
+          "flakes"
+        ];
+        environment.systemPackages = [ installer ];
+
+        # The profile logs `nixos` in on the first console; start the installer
+        # there. It escalates through the profile's passwordless sudo.
+        programs.bash.loginShellInit = ''
+          if [ "$(tty)" = /dev/tty1 ] && [ -z "$NUN_STARTED" ]; then
+            export NUN_STARTED=1
+            nun-installer
+          fi
+        '';
+      }
+    )
+  ];
+}

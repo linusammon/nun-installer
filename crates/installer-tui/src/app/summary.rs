@@ -23,6 +23,12 @@ impl Summary {
         self.errors.set(Target::Confirm, message);
     }
 
+    /// Forget what was typed, so a different disk is not confirmed by the old word.
+    pub fn reset(&mut self) {
+        self.confirm.clear();
+        self.errors.clear();
+    }
+
     /// Next means the user pressed Enter; whether the word is right is for the
     /// caller to judge.
     pub fn key(&mut self, key: &KeyEvent) -> Flow {

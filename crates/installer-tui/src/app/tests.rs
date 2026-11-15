@@ -661,8 +661,13 @@ fn install_refuses_if_the_confirmed_disk_is_gone_even_if_another_one_remains() {
 
     unplugged.set(true);
     assert!(press(&mut a, KeyCode::Enter).is_empty());
-    assert_eq!(a.screen(), Screen::Summary);
+    assert_eq!(a.screen(), Screen::Disk, "sent back to choose again");
     assert!(message(&a).contains("/dev/vda is no longer available"));
+    assert_eq!(
+        a.summary().confirm().value(),
+        "",
+        "the old word is forgotten"
+    );
 }
 
 #[test]
@@ -685,7 +690,7 @@ fn install_refuses_if_disk_became_unusable() {
     type_str(&mut a, "vda");
     ok.set(false);
     assert!(press(&mut a, KeyCode::Enter).is_empty());
-    assert_eq!(a.screen(), Screen::Summary);
+    assert_eq!(a.screen(), Screen::Disk);
     assert!(message(&a).contains("no longer available"));
 }
 

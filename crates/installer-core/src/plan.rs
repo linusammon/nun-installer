@@ -80,6 +80,14 @@ pub struct Action {
     pub cleanup: bool,
 }
 
+impl Action {
+    /// Whether this action is shown as a step of the installation. Cleanup
+    /// runs even after a failure and is not something to watch.
+    pub fn is_step(&self) -> bool {
+        !self.cleanup
+    }
+}
+
 /// One word of a shell command line: as is when it is plainly safe, otherwise in
 /// single quotes, so a printed command can be pasted into a shell.
 fn shell_word(s: &str) -> String {
@@ -166,8 +174,6 @@ fn write(description: &str, path: String, content: &str) -> Action {
     )
 }
 
-/// Build the full install plan. Answers must already be validated and
-/// the files rendered from them.
 /// Why a plan could not be built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum PlanError {
@@ -175,6 +181,8 @@ pub enum PlanError {
     MissingPassphrase,
 }
 
+/// Build the full install plan. Answers must already be validated and
+/// the files rendered from them.
 pub fn build_plan(a: &Answers, files: &GeneratedFiles, host: &Host) -> Result<Plan, PlanError> {
     let mut actions = Vec::new();
     let staged_disko = format!("{STAGING_DIR}/disko.nix");

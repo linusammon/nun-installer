@@ -449,9 +449,11 @@ impl App {
             && self.disk.selected().is_some_and(DiskInfo::selectable);
         if !still_ok {
             let shown = confirmed.map_or_else(|| "the disk".into(), |p| p.display().to_string());
-            self.summary.fail(format!(
-                "{shown} is no longer available, go back and choose again"
-            ));
+            // Back to the choice, not on with whatever the rescan now highlights.
+            self.summary.reset();
+            self.disk
+                .fail(format!("{shown} is no longer available, choose again"));
+            self.screen = Screen::Disk;
             return None;
         }
 

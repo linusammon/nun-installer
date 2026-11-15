@@ -36,6 +36,7 @@ pub fn target_lock(installer_lock: &str) -> Result<String, LockError> {
             "root": { "inputs": { "disko": "disko", "nixpkgs": "nixpkgs" } },
         },
         "root": "root",
+        // 7 is the lock format this code writes and the tests use.
         "version": lock.get("version").cloned().unwrap_or(json!(7)),
     });
     Ok(serde_json::to_string_pretty(&reduced)? + "\n")
