@@ -214,6 +214,19 @@ pub fn build_plan(a: &Answers, files: &GeneratedFiles) -> Plan {
         &files.disko_nix,
     ));
     actions.push(action(
+        "Lock flake inputs",
+        ActionKind::Run(Command::new(
+            "nix",
+            [
+                "--extra-experimental-features",
+                "nix-command flakes",
+                "flake",
+                "lock",
+                CONFIG_DIR,
+            ],
+        )),
+    ));
+    actions.push(action(
         "Install NixOS",
         ActionKind::Run(Command::new(
             "nixos-install",
@@ -315,6 +328,7 @@ mod tests {
                 "Write flake.nix",
                 "Write configuration.nix",
                 "Write disko.nix",
+                "Lock flake inputs",
                 "Install NixOS",
                 "Set password for alice",
                 "Remove staged files",
@@ -336,6 +350,8 @@ mod tests {
         let p = plan_for(&answers(false));
         let pos = |d: &str| p.actions.iter().position(|a| a.description == d).unwrap();
         assert!(pos("Generate hardware configuration") < pos("Write configuration.nix"));
+        assert!(pos("Write disko.nix") < pos("Lock flake inputs"));
+        assert!(pos("Lock flake inputs") < pos("Install NixOS"));
         assert!(
             pos("Partition, format and mount /dev/vda (WIPES THE DISK)") < pos("Install NixOS")
         );
@@ -352,7 +368,7 @@ mod tests {
     #[test]
     fn password_goes_through_stdin_not_args() {
         let p = plan_for(&answers(false));
-        let ActionKind::Run(c) = &p.actions[7].kind else {
+        let ActionKind::Run(c) = &p.actions[8].kind else {
             panic!("expected command");
         };
         assert_eq!(c.program, "nixos-enter");
