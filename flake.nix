@@ -30,7 +30,14 @@
         pkgs:
         let
           craneLib = crane.mkLib pkgs;
-          src = craneLib.cleanCargoSource ./.;
+          lib = pkgs.lib;
+          src = lib.cleanSourceWith {
+            src = ./.;
+            filter =
+              path: type:
+              (craneLib.filterCargoSources path type) || (lib.hasSuffix ".j2" path) || (lib.hasSuffix ".snap" path);
+            name = "source";
+          };
           commonArgs = {
             inherit src;
             strictDeps = true;
