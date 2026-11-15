@@ -7,6 +7,13 @@ use std::path::{Path, PathBuf};
 
 /// Environment the installer relies on. sudo resets the environment, so these
 /// are passed through explicitly with `env`.
+///
+/// Passing the caller's `PATH` means the escalated installer runs `disko`, `nix`
+/// and `nixos-install` from a directory list the caller controls, instead of
+/// sudo's `secure_path`. That is not an escalation: whoever can run this through
+/// sudo can already run anything as root. It is needed because the Nix package
+/// supplies `disko` through `PATH`. Resolve them to absolute paths if the
+/// installer is ever run where the caller should not be trusted with that.
 fn keep(name: &str) -> bool {
     name.starts_with("NUN_") || name == "PATH" || name == "TERM"
 }
