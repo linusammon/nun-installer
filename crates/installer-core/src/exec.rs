@@ -7,6 +7,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::mpsc;
+use zeroize::Zeroizing;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExecError {
@@ -144,11 +145,19 @@ fn run_command(
             }
         })?;
 
-    if let (Some(secret), Some(mut stdin)) = (&cmd.stdin, child.stdin.take()) {
-        stdin
-            .write_all(secret.expose().as_bytes())
-            .map_err(io_err)?;
-    }
+    // Written on its own thread, started before anything is read: a child that
+    // produces a lot of output before it reads its stdin would otherwise block
+    // both sides forever. The copy of the secret is wiped when the thread ends.
+    let writer = match (&cmd.stdin, child.stdin.take()) {
+        (Some(secret), Some(mut pipe)) => {
+            let data = Zeroizing::new(secret.expose().as_bytes().to_vec());
+            Some(std::thread::spawn(move || {
+                // The child may exit without reading everything; that is not our error.
+                let _ = pipe.write_all(&data);
+            }))
+        }
+        _ => None,
+    };
 
     let (tx, rx) = mpsc::channel::<String>();
     let readers: Vec<_> = [
@@ -181,7 +190,7 @@ fn run_command(
     for line in rx {
         sink(&line);
     }
-    for r in readers {
+    for r in readers.into_iter().chain(writer) {
         let _ = r.join();
     }
 
@@ -368,6 +377,37 @@ mod tests {
         let mut got = lines.borrow().clone();
         got.sort();
         assert_eq!(got, ["env-ok", "err", "out"]);
+    }
+
+    #[test]
+    fn a_chatty_child_that_reads_stdin_late_does_not_deadlock() {
+        // The child writes far more than a pipe holds before it reads its stdin,
+        // so writing stdin and draining output must happen at the same time.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let big = Secret::new("s".repeat(300_000));
+            let mut exec = Live::new(|_| {});
+            let a = Action {
+                description: "chatty".into(),
+                kind: ActionKind::Run(
+                    Command::new(
+                        "sh",
+                        [
+                            "-c",
+                            "head -c 300000 /dev/zero | tr '\\0' x; cat > /dev/null",
+                        ],
+                    )
+                    .with_stdin(big),
+                ),
+                cleanup: false,
+            };
+            let _ = tx.send(exec.execute(&a).is_ok());
+        });
+        assert_eq!(
+            rx.recv_timeout(std::time::Duration::from_secs(10)),
+            Ok(true),
+            "deadlocked"
+        );
     }
 
     #[test]

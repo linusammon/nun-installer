@@ -209,9 +209,16 @@ fn unescape(s: &str) -> String {
                 .iter()
                 .all(|b| (b'0'..=b'7').contains(b))
         {
-            let v = (bytes[i + 1] - b'0') * 64 + (bytes[i + 2] - b'0') * 8 + (bytes[i + 3] - b'0');
-            out.push(v);
-            i += 4;
+            let digit = |k: usize| u32::from(bytes[i + k] - b'0');
+            let v = digit(1) * 64 + digit(2) * 8 + digit(3);
+            // The kernel only emits \000 to \377; anything bigger is not an escape.
+            if let Ok(byte) = u8::try_from(v) {
+                out.push(byte);
+                i += 4;
+                continue;
+            }
+            out.push(bytes[i]);
+            i += 1;
         } else {
             out.push(bytes[i]);
             i += 1;
@@ -347,6 +354,18 @@ mod tests {
         let m = parse_mounts("/dev/sdb1 /mnt/my\\040disk ext4 rw 0 0\nproc /proc proc rw 0 0\n");
         assert_eq!(m[0].target, p("/mnt/my disk"));
         assert_eq!(m[1].source, p("proc"));
+    }
+
+    #[test]
+    fn out_of_range_octal_escapes_are_left_alone_not_a_panic() {
+        assert_eq!(unescape("a\\777b"), "a\\777b");
+        assert_eq!(unescape("\\400"), "\\400");
+        assert_eq!(
+            unescape("\\377"),
+            "\u{fffd}",
+            "0xff alone is not valid UTF-8"
+        );
+        assert_eq!(unescape("x\\040y\\134z"), "x y\\z");
     }
 
     #[test]
