@@ -1595,7 +1595,7 @@ mod tests {
         assert!(plan
             .actions
             .iter()
-            .any(|x| x.description.contains("WIPES THE DISK")));
+            .any(|x| x.description.contains("Partition, format and mount")));
         let real = plan.actions.iter().filter(|x| !x.cleanup).count();
         assert_eq!(
             a.install.steps.len(),

@@ -28,7 +28,7 @@ fn dry_run_prints_plan_and_redacts_secrets() {
     let out = run(&["--config", answers.to_str().unwrap(), "--dry-run"]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     let stdout = text(&out.stdout);
-    assert!(stdout.contains("WIPES THE DISK"));
+    assert!(stdout.contains("Partition, format and mount"));
     assert!(stdout.contains("disko --mode destroy,format,mount"));
     assert!(stdout.contains("programs.umbriel.enable = true;"));
     assert!(stdout.contains("<redacted>"));

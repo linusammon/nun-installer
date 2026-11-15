@@ -568,10 +568,8 @@ fn summary_page(frame: &mut Frame, area: Rect, app: &App) {
             format!("EVERYTHING ON {} WILL BE ERASED.", a.disk.device),
             DANGER,
         ),
-        Line::raw(format!(
-            "Type the disk name ({}) below to confirm.",
-            app.confirm_word()
-        )),
+        // One empty line between the warning and the confirmation field.
+        Line::raw(""),
     ];
     let [text, field, _] = Layout::vertical([
         Constraint::Length(lines.len() as u16),
@@ -583,7 +581,7 @@ fn summary_page(frame: &mut Frame, area: Rect, app: &App) {
     input_field(
         frame,
         field,
-        "Confirm disk",
+        &format!("Type the disk name ({}) to confirm", app.confirm_word()),
         &app.confirm,
         true,
         app.error_for(Target::Confirm),
@@ -892,7 +890,29 @@ mod tests {
         a.screen = Screen::Summary;
         let out = draw(&a);
         assert!(out.contains("EVERYTHING ON /dev/vda WILL BE ERASED"));
-        assert!(out.contains("Type the disk name (vda)"));
+        assert!(out.contains("Type the disk name (vda) to confirm"));
+        assert!(
+            !out.contains("below to confirm"),
+            "the prompt is in the field title"
+        );
+    }
+
+    #[test]
+    fn the_confirm_field_sits_one_blank_line_below_the_warning() {
+        let mut a = app();
+        a.screen = Screen::Summary;
+        let out = draw(&a);
+        let lines: Vec<_> = out.lines().collect();
+        let warning = lines
+            .iter()
+            .position(|l| l.contains("WILL BE ERASED"))
+            .unwrap();
+        assert!(lines[warning + 1].trim().is_empty(), "one empty line");
+        assert!(
+            lines[warning + 2].contains("Type the disk name (vda) to confirm"),
+            "{}",
+            lines[warning + 2]
+        );
     }
 
     #[test]

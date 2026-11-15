@@ -198,10 +198,7 @@ pub fn build_plan(a: &Answers, files: &GeneratedFiles, host: &Host) -> Plan {
         disko = disko.with_env("NIX_PATH", &format!("nixpkgs={}", path.display()));
     }
     actions.push(action(
-        &format!(
-            "Partition, format and mount {} (WIPES THE DISK)",
-            a.disk.device
-        ),
+        &format!("Partition, format and mount {}", a.disk.device),
         ActionKind::Run(disko),
     ));
     actions.push(action(
@@ -342,7 +339,7 @@ mod tests {
             [
                 "Create private staging directory",
                 "Stage disk layout",
-                "Partition, format and mount /dev/vda (WIPES THE DISK)",
+                "Partition, format and mount /dev/vda",
                 "Generate hardware configuration",
                 "Write flake.nix",
                 "Write configuration.nix",
@@ -371,9 +368,7 @@ mod tests {
         assert!(pos("Generate hardware configuration") < pos("Write configuration.nix"));
         assert!(pos("Write disko.nix") < pos("Lock flake inputs"));
         assert!(pos("Lock flake inputs") < pos("Install NixOS"));
-        assert!(
-            pos("Partition, format and mount /dev/vda (WIPES THE DISK)") < pos("Install NixOS")
-        );
+        assert!(pos("Partition, format and mount /dev/vda") < pos("Install NixOS"));
     }
 
     #[test]
