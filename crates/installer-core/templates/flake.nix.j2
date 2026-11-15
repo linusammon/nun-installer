@@ -3,9 +3,9 @@
   description = {{ ("NixOS configuration for " ~ hostname) | nix }};
 
   inputs = {
-    nixpkgs.url = "{{ nixpkgs_url }}";
+    nixpkgs.url = {{ nixpkgs_url | nix }};
     disko = {
-      url = "github:nix-community/disko";
+      url = {{ disko_url | nix }};
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };

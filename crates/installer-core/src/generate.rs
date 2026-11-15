@@ -4,6 +4,9 @@ use minijinja::{context, Environment, Value};
 /// Default nixpkgs ref written into the generated flake.
 pub const NIXPKGS_URL: &str = "github:NixOS/nixpkgs/nixos-unstable";
 
+/// Default disko ref written into the generated flake.
+pub const DISKO_URL: &str = "github:nix-community/disko";
+
 /// Where the LUKS passphrase is staged for disko. Removed again after install.
 pub const LUKS_PASSWORD_PATH: &str = "/tmp/nun-luks-password";
 
@@ -22,6 +25,9 @@ pub struct Host {
     pub system: String,
     /// `system.stateVersion`, e.g. `26.05`.
     pub state_version: String,
+    /// Flake input URLs for the generated flake.
+    pub nixpkgs_url: String,
+    pub disko_url: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -34,7 +40,9 @@ pub enum HostError {
 
 impl Host {
     /// Detect boot mode and architecture of the running machine. The state
-    /// version comes from `NUN_STATE_VERSION`, set by the Nix package.
+    /// version comes from `NUN_STATE_VERSION`, set by the Nix package. Input
+    /// URLs can be overridden with `NUN_NIXPKGS_URL` and `NUN_DISKO_URL` (tests,
+    /// mirrors, offline media).
     pub fn detect() -> Result<Self, HostError> {
         let system = match std::env::consts::ARCH {
             "x86_64" => "x86_64-linux",
@@ -45,6 +53,12 @@ impl Host {
             .ok()
             .filter(|v| !v.is_empty())
             .ok_or(HostError::MissingStateVersion)?;
+        let url = |var: &str, default: &str| {
+            std::env::var(var)
+                .ok()
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| default.into())
+        };
         let boot = if std::path::Path::new("/sys/firmware/efi").exists() {
             Boot::Uefi
         } else {
@@ -54,6 +68,8 @@ impl Host {
             boot,
             system: system.into(),
             state_version,
+            nixpkgs_url: url("NUN_NIXPKGS_URL", NIXPKGS_URL),
+            disko_url: url("NUN_DISKO_URL", DISKO_URL),
         })
     }
 }
@@ -102,7 +118,8 @@ fn env() -> Environment<'static> {
 pub fn render(a: &Answers, host: &Host) -> Result<GeneratedFiles, RenderError> {
     let env = env();
     let ctx = context! {
-        nixpkgs_url => NIXPKGS_URL,
+        nixpkgs_url => &host.nixpkgs_url,
+        disko_url => &host.disko_url,
         luks_password_path => LUKS_PASSWORD_PATH,
         system => &host.system,
         state_version => &host.state_version,
@@ -161,6 +178,8 @@ mod tests {
             boot,
             system: "x86_64-linux".into(),
             state_version: "26.05".into(),
+            nixpkgs_url: NIXPKGS_URL.into(),
+            disko_url: DISKO_URL.into(),
         }
     }
 

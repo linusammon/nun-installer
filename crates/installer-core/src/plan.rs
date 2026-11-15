@@ -293,6 +293,8 @@ mod tests {
             boot: Boot::Uefi,
             system: "x86_64-linux".into(),
             state_version: "26.05".into(),
+            nixpkgs_url: crate::generate::NIXPKGS_URL.into(),
+            disko_url: crate::generate::DISKO_URL.into(),
         };
         build_plan(a, &render(a, &host).unwrap())
     }
