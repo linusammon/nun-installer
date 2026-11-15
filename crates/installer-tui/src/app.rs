@@ -16,7 +16,6 @@ pub enum Screen {
     Keyboard,
     Disk,
     User,
-    Hostname,
     Summary,
     Installing,
     Done,
@@ -30,7 +29,6 @@ pub const BAR: &[(&str, &[Screen])] = &[
     ("Language", &[Screen::Locale]),
     ("Disk", &[Screen::Disk]),
     ("User", &[Screen::User]),
-    ("Hostname", &[Screen::Hostname]),
     ("Review", &[Screen::Summary]),
     ("Install", &[Screen::Installing]),
     ("Done", &[Screen::Done]),
@@ -45,7 +43,6 @@ const FLOW: &[Screen] = &[
     Screen::Locale,
     Screen::Disk,
     Screen::User,
-    Screen::Hostname,
     Screen::Summary,
     Screen::Installing,
     Screen::Done,
@@ -113,7 +110,6 @@ pub enum Target {
     Username,
     Password,
     PasswordConfirm,
-    Hostname,
     Confirm,
 }
 
@@ -130,8 +126,7 @@ fn field_target(field: Field) -> Target {
         Field::EncryptionPassword => Target::Passphrase,
         Field::UserName => Target::Username,
         Field::UserPasswordHash => Target::Password,
-        Field::Hostname => Target::Hostname,
-        Field::SchemaVersion | Field::Locale | Field::Timezone => Target::Screen,
+        Field::SchemaVersion | Field::Hostname | Field::Locale | Field::Timezone => Target::Screen,
         Field::KeyboardLayout | Field::KeyboardVariant => Target::Screen,
     }
 }
@@ -182,6 +177,9 @@ pub enum InstallEvent {
 
 const LOG_LINES: usize = 1000;
 
+/// Every installed system gets this name; it is not asked for.
+const DEFAULT_HOSTNAME: &str = "nun";
+
 pub struct App {
     pub screen: Screen,
     pub catalog: Catalog,
@@ -214,7 +212,6 @@ pub struct App {
     pub user_focus: UserField,
     password_hash: Option<Secret>,
 
-    pub hostname: TextInput,
     pub confirm: TextInput,
 
     pub errors: Vec<FieldError>,
@@ -284,7 +281,6 @@ impl App {
             password_confirm: TextInput::masked(),
             user_focus: UserField::Name,
             password_hash: None,
-            hostname: TextInput::new("nun"),
             confirm: TextInput::default(),
             errors: Vec::new(),
             notice: None,
@@ -407,7 +403,7 @@ impl App {
                     .unwrap_or_else(|| Secret::new("")),
             },
             system: System {
-                hostname: self.hostname.value().to_owned(),
+                hostname: DEFAULT_HOSTNAME.to_owned(),
                 locale: Self::selected_value(&self.locale),
                 timezone: Self::selected_value(&self.timezone),
                 keyboard_layout: self.layout_value(),
@@ -514,10 +510,6 @@ impl App {
             }
             Screen::User => {
                 self.user_key(key);
-                Vec::new()
-            }
-            Screen::Hostname => {
-                self.hostname_key(key);
                 Vec::new()
             }
             Screen::Summary => self.summary_key(key),
@@ -809,7 +801,7 @@ impl App {
             KeyCode::Tab | KeyCode::Down => self.move_user_focus(1),
             KeyCode::BackTab | KeyCode::Up => self.move_user_focus(-1),
             KeyCode::Esc => self.back(),
-            KeyCode::Enter => self.submit_user(),
+            KeyCode::Enter => self.user_enter(),
             KeyCode::Backspace => match self.user_focus {
                 UserField::Name => self.username.pop(),
                 UserField::Password => self.password.pop(),
@@ -824,6 +816,29 @@ impl App {
                     }
                 }
             }
+        }
+    }
+
+    /// Enter checks the field and moves to the next one; only the last field
+    /// submits the screen.
+    fn user_enter(&mut self) {
+        match self.user_focus {
+            UserField::Name => {
+                let errors = self.errors_for(&[Field::UserName]);
+                if errors.is_empty() {
+                    self.user_focus = UserField::Password;
+                } else {
+                    self.errors = errors;
+                }
+            }
+            UserField::Password => {
+                if self.password.is_empty() && self.password_hash.is_none() {
+                    self.fail(Target::Password, "password must not be empty");
+                } else {
+                    self.user_focus = UserField::Confirm;
+                }
+            }
+            UserField::Confirm => self.submit_user(),
         }
     }
 
@@ -846,6 +861,12 @@ impl App {
             }
         }
         if !errors.is_empty() {
+            // Put the cursor on the first problem.
+            self.user_focus = match errors[0].target {
+                Target::Username => UserField::Name,
+                Target::Password => UserField::Password,
+                _ => UserField::Confirm,
+            };
             self.errors = errors;
             return;
         }
@@ -862,19 +883,6 @@ impl App {
             self.password_confirm.clear();
         }
         self.advance(&[]);
-    }
-
-    fn hostname_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Esc => self.back(),
-            KeyCode::Enter => self.advance(&[Field::Hostname]),
-            KeyCode::Backspace => self.hostname.pop(),
-            _ => {
-                if let Some(c) = text(&key) {
-                    self.hostname.push(c);
-                }
-            }
-        }
     }
 
     pub fn confirm_word(&self) -> String {
@@ -1115,7 +1123,6 @@ mod tests {
         press(app, KeyCode::Tab);
         type_str(app, "hunter2");
         press(app, KeyCode::Enter);
-        press(app, KeyCode::Enter); // hostname "nun"
         assert_eq!(app.screen, Screen::Summary);
     }
 
@@ -1506,24 +1513,68 @@ mod tests {
         }
         type_str(&mut a, "one");
         press(&mut a, KeyCode::Enter);
-        assert_eq!(a.screen, Screen::Hostname);
+        assert_eq!(a.screen, Screen::Summary);
         assert!(a.password.is_empty() && a.password_confirm.is_empty());
         assert!(a.answers().user.password_hash.expose().starts_with("$y$"));
     }
 
     #[test]
-    fn invalid_hostname_is_rejected() {
+    fn enter_on_the_username_moves_to_the_password_without_complaining() {
         let mut a = ready();
-        to_summary(&mut a);
-        press(&mut a, KeyCode::Esc);
-        assert_eq!(a.screen, Screen::Hostname);
-        for _ in 0..3 {
+        to_user(&mut a);
+        type_str(&mut a, "alice");
+        press(&mut a, KeyCode::Enter);
+        assert_eq!(a.screen, Screen::User);
+        assert_eq!(a.user_focus, UserField::Password);
+        assert!(a.errors.is_empty(), "no password error yet: {:?}", a.errors);
+
+        type_str(&mut a, "hunter2");
+        press(&mut a, KeyCode::Enter);
+        assert_eq!(a.user_focus, UserField::Confirm);
+        assert!(a.errors.is_empty());
+
+        type_str(&mut a, "hunter2");
+        press(&mut a, KeyCode::Enter);
+        assert_eq!(a.screen, Screen::Summary, "the last field submits");
+    }
+
+    #[test]
+    fn enter_on_a_bad_username_or_empty_password_stays_on_that_field() {
+        let mut a = ready();
+        to_user(&mut a);
+        type_str(&mut a, "Alice");
+        press(&mut a, KeyCode::Enter);
+        assert_eq!(a.user_focus, UserField::Name);
+        assert!(a.error_for(Target::Username).is_some());
+
+        for _ in 0..5 {
             press(&mut a, KeyCode::Backspace);
         }
-        type_str(&mut a, "-bad");
+        type_str(&mut a, "alice");
         press(&mut a, KeyCode::Enter);
-        assert_eq!(a.screen, Screen::Hostname);
-        assert!(a.error_for(Target::Hostname).is_some());
+        press(&mut a, KeyCode::Enter); // empty password
+        assert_eq!(a.user_focus, UserField::Password);
+        assert!(a.error_for(Target::Password).is_some());
+    }
+
+    #[test]
+    fn a_failed_submit_puts_the_cursor_on_the_confirm_field() {
+        let mut a = ready();
+        to_user(&mut a);
+        type_str(&mut a, "alice");
+        press(&mut a, KeyCode::Enter);
+        type_str(&mut a, "one");
+        press(&mut a, KeyCode::Enter);
+        type_str(&mut a, "two");
+        press(&mut a, KeyCode::Enter);
+        assert_eq!(a.screen, Screen::User);
+        assert_eq!(a.user_focus, UserField::Confirm);
+        assert!(a.error_for(Target::PasswordConfirm).is_some());
+    }
+
+    #[test]
+    fn the_hostname_is_fixed() {
+        assert_eq!(app().answers().system.hostname, "nun");
     }
 
     #[test]

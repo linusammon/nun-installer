@@ -6,3 +6,4 @@
 devenv.local.nix
 .pre-commit-config.yaml
 *.qcow2
+nun-installer-efi-vars.fd

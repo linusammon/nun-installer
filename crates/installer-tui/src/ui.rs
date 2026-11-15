@@ -13,7 +13,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
-const ACCENT: Color = Color::Magenta;
+/// Text, borders and the cursor. Light blue, because plain blue is too dark to
+/// read on the Linux console's black background.
+const ACCENT: Color = Color::LightBlue;
+/// Background of the current step in the step bar, under white text.
+const ACCENT_BG: Color = Color::Blue;
 const DIM: Style = Style::new().fg(Color::DarkGray);
 const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
 const OK: Style = Style::new().fg(Color::Green);
@@ -51,7 +55,6 @@ pub fn render(frame: &mut Frame, app: &App) {
         Screen::Keyboard => keyboard(frame, body, app),
         Screen::Disk => disk_page(frame, body, app),
         Screen::User => user_page(frame, body, app),
-        Screen::Hostname => hostname_page(frame, body, app),
         Screen::Summary => summary_page(frame, body, app),
         Screen::Installing | Screen::Done => install_page(frame, body, app),
     }
@@ -75,7 +78,7 @@ fn step_bar(frame: &mut Frame, area: Rect, app: &App) {
         let mut spans = Vec::new();
         for (i, (label, _)) in BAR.iter().enumerate() {
             let style = if i == current {
-                Style::new().fg(Color::White).bg(ACCENT)
+                Style::new().fg(Color::White).bg(ACCENT_BG)
             } else {
                 Style::new()
             };
@@ -88,7 +91,7 @@ fn step_bar(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(vec![
             Span::styled(
                 format!(" {} ", BAR[current].0),
-                Style::new().fg(Color::White).bg(ACCENT),
+                Style::new().fg(Color::White).bg(ACCENT_BG),
             ),
             Span::styled(format!("  step {} of {}", current + 1, BAR.len()), DIM),
         ])
@@ -130,7 +133,6 @@ fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
         ],
         Screen::Disk => vec![("Tab", "next field"), ("Esc", "prev"), ("Enter", "confirm")],
         Screen::User => vec![("Tab", "next"), ("Esc", "prev"), ("Enter", "confirm")],
-        Screen::Hostname => vec![("Esc", "prev"), ("Enter", "confirm")],
         Screen::Summary => vec![("Esc", "prev"), ("Enter", "install")],
         Screen::Installing => vec![],
         Screen::Done if app.install.result == Some(Ok(())) => vec![("Enter", "reboot")],
@@ -529,30 +531,6 @@ fn user_page(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn hostname_page(frame: &mut Frame, area: Rect, app: &App) {
-    let [field, note, _] = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Length(2),
-        Constraint::Min(0),
-    ])
-    .areas(area);
-    input_field(
-        frame,
-        field,
-        "Hostname — the name of this computer",
-        &app.hostname,
-        true,
-        app.error_for(Target::Hostname),
-    );
-    frame.render_widget(
-        Paragraph::new(Line::styled(
-            "How this computer shows up on the network.",
-            DIM,
-        )),
-        note,
-    );
-}
-
 fn summary_page(frame: &mut Frame, area: Rect, app: &App) {
     let a = app.answers();
     let row =
@@ -730,7 +708,6 @@ mod tests {
             Screen::Keyboard,
             Screen::Disk,
             Screen::User,
-            Screen::Hostname,
             Screen::Summary,
             Screen::Installing,
             Screen::Done,
@@ -745,7 +722,7 @@ mod tests {
     #[test]
     fn step_bar_highlights_the_current_step_and_lists_all() {
         let mut a = app();
-        a.screen = Screen::Hostname;
+        a.screen = Screen::Summary;
         let out = draw(&a);
         for (label, _) in BAR {
             assert!(out.contains(label), "{label}");
@@ -757,7 +734,7 @@ mod tests {
         let mut a = app();
         a.screen = Screen::Disk;
         let out = draw_sized(&a, 60, 24);
-        assert!(out.contains("step 5 of 10"), "{out}");
+        assert!(out.contains("step 5 of 9"), "{out}");
     }
 
     #[test]
@@ -922,9 +899,9 @@ mod tests {
     fn errors_show_in_the_field_border_not_a_footer() {
         use crate::app::FieldError;
         let mut a = app();
-        a.screen = Screen::Hostname;
+        a.screen = Screen::User;
         a.errors = vec![FieldError {
-            target: Target::Hostname,
+            target: Target::Username,
             message: "bad thing".into(),
         }];
         let out = draw(&a);
@@ -938,7 +915,7 @@ mod tests {
     #[test]
     fn hints_sit_on_the_right_and_notice_on_the_left() {
         let mut a = app();
-        a.screen = Screen::Hostname;
+        a.screen = Screen::Summary;
         a.on_keymap_result(Ok("ch".into()));
         let out = draw(&a);
         let line = out.lines().find(|l| l.contains("Esc prev")).unwrap();
