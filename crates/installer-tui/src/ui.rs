@@ -286,7 +286,8 @@ fn welcome(frame: &mut Frame, area: Rect, app: &App) {
         Line::raw(""),
         Line::raw("It will install NixOS with Noctalia, its Greeter as well as Umbriel."),
         Line::raw(""),
-        check(true, &format!("{boot} boot ({})", app.host.system), ""),
+        check(true, &format!("{boot} boot"), ""),
+        check(true, &format!("Architecture: {}", app.host.system), ""),
     ];
 
     match (&app.checks.result, app.checks.running) {
@@ -318,7 +319,7 @@ fn welcome(frame: &mut Frame, area: Rect, app: &App) {
                 ));
             }
             if let Some(note) = &result.clock_note {
-                lines.push(Line::styled(format!("[warn] {note}"), WARN));
+                lines.push(Line::styled(format!("[WARN] {note}"), WARN));
             }
             lines.push(check(
                 app.has_usable_disk(),
@@ -327,7 +328,7 @@ fn welcome(frame: &mut Frame, area: Rect, app: &App) {
             ));
             if result.on_ac == Some(false) {
                 lines.push(Line::styled(
-                    "[warn] Not on AC power. Losing power mid-install can leave the disk broken.",
+                    "[WARN] Not on AC power. Losing power mid-install can leave the disk broken.",
                     WARN,
                 ));
             }
@@ -745,7 +746,8 @@ mod tests {
         let out = draw(&a);
         assert!(out.contains("[OK] Internet access"));
         assert!(out.contains("[OK] A usable disk was found"));
-        assert!(out.contains("[OK] UEFI boot (x86_64-linux)"));
+        assert!(out.contains("[OK] UEFI boot"));
+        assert!(out.contains("[OK] Architecture: x86_64-linux"));
         assert!(out.contains("Press Enter to continue."));
 
         a.on_checks(checks(false));
@@ -764,7 +766,7 @@ mod tests {
         assert!(
             out.contains("It will install NixOS with Noctalia, its Greeter as well as Umbriel.")
         );
-        assert!(out.contains("[OK] BIOS boot (x86_64-linux)"));
+        assert!(out.contains("[OK] BIOS boot"));
     }
 
     #[test]
@@ -777,8 +779,8 @@ mod tests {
             ..checks(true)
         });
         let out = draw(&a);
-        assert!(out.contains("[warn] The system clock looks wrong"));
-        assert!(out.contains("[warn] Not on AC power"));
+        assert!(out.contains("[WARN] The system clock looks wrong"));
+        assert!(out.contains("[WARN] Not on AC power"));
     }
 
     #[test]
