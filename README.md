@@ -21,7 +21,9 @@ nun-installer --config answers.json --dry-run   # print the plan and generated f
 nun-installer --config answers.json --yes       # install, wipes the target disk
 ```
 
-Without `--config` the interactive installer starts (it needs a terminal).
+Without `--config` the interactive installer starts (it needs a terminal). When not
+root it re-runs itself through `sudo`. Welcome checks for internet access and a
+usable disk, and warns about a wrong clock or running on battery power.
 See `crates/installer-tui/tests/fixtures/answers.json` for the answers format.
 
 ## Development
@@ -58,3 +60,5 @@ to system paths or must be set by hand:
 | `NUN_STATE_VERSION` | `system.stateVersion` for the new system (required) |
 | `NUN_NIXPKGS_PATH` | nixpkgs used to evaluate disko |
 | `NUN_NIXPKGS_URL`, `NUN_DISKO_URL` | flake inputs written into the generated flake |
+| `NUN_CKBCOMP`, `NUN_LOADKEYS` | tools that load the chosen keyboard layout into the console |
+| `NUN_OFFLINE=1` | the medium carries everything needed, so skip the internet check |
