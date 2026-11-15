@@ -12,6 +12,7 @@ pub mod password;
 pub mod plan;
 pub mod safety;
 pub mod secret;
+pub mod tools;
 pub mod validate;
 
 pub use answers::{Answers, Disk, System, User, SCHEMA_VERSION};
@@ -31,4 +32,5 @@ pub use password::{hash_password, HashError};
 pub use plan::{build_plan, Action, ActionKind, Command, Content, Plan};
 pub use safety::{check_disk, SafetyError};
 pub use secret::Secret;
+pub use tools::{missing_tools, missing_tools_in, REQUIRED_TOOLS};
 pub use validate::{validate, Field, ValidationError};

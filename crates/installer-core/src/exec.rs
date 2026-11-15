@@ -10,6 +10,11 @@ use std::sync::mpsc;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExecError {
+    #[error("{description}: `{program}` was not found in PATH")]
+    CommandNotFound {
+        description: String,
+        program: String,
+    },
     #[error("{description}: {source}")]
     Io {
         description: String,
@@ -125,7 +130,19 @@ fn run_command(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(io_err)?;
+        .map_err(|source| {
+            if source.kind() == io::ErrorKind::NotFound {
+                ExecError::CommandNotFound {
+                    description: action.description.clone(),
+                    program: cmd.program.clone(),
+                }
+            } else {
+                ExecError::Io {
+                    description: action.description.clone(),
+                    source,
+                }
+            }
+        })?;
 
     if let (Some(secret), Some(mut stdin)) = (&cmd.stdin, child.stdin.take()) {
         stdin
@@ -408,6 +425,24 @@ mod tests {
         let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(mode, 0o700);
+    }
+
+    #[test]
+    fn a_missing_program_is_named_not_a_bare_os_error() {
+        let a = Action {
+            description: "Partition".into(),
+            kind: ActionKind::Run(Command::new(
+                "definitely-not-installed",
+                Vec::<String>::new(),
+            )),
+            cleanup: false,
+        };
+        let err = live().execute(&a).unwrap_err();
+        assert!(matches!(err, ExecError::CommandNotFound { .. }));
+        assert_eq!(
+            err.to_string(),
+            "Partition: `definitely-not-installed` was not found in PATH"
+        );
     }
 
     #[test]
