@@ -1,0 +1,17 @@
+[package]
+name = "installer-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "nun-installer"
+path = "src/main.rs"
+
+[dependencies]
+installer-core.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+
+[lints]
+workspace = true
