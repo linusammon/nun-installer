@@ -1,11 +1,18 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use zeroize::Zeroize;
 
 /// A string that never shows up in `Debug` or `Display` output, so it cannot
 /// leak through logging or a dry-run. Serializes as a plain string.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Secret(String);
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
 
 impl Secret {
     pub fn new(s: impl Into<String>) -> Self {
