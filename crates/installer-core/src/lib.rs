@@ -40,4 +40,8 @@ pub use plan::{
 pub use safety::{check_disk, Facts, Mount, SafetyError};
 pub use secret::Secret;
 pub use tools::{missing_tools, missing_tools_in, REQUIRED_TOOLS};
-pub use validate::{validate, Field, ValidationError};
+pub use validate::{
+    check_device, check_encryption, check_hostname, check_keyboard_layout, check_keyboard_variant,
+    check_locale, check_password_hash, check_swap_size, check_timezone, check_username, validate,
+    Field, ValidationError, MAX_SWAP_MIB,
+};

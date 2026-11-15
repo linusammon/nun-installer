@@ -67,11 +67,8 @@ pub fn validate(a: &Answers, catalog: &Catalog) -> Vec<ValidationError> {
     if let Err(m) = check_device(&a.disk.device) {
         errs.push(err(Field::DiskDevice, m));
     }
-    if a.disk.swap_size_mib > MAX_SWAP_MIB {
-        errs.push(err(
-            Field::SwapSize,
-            format!("must be at most {MAX_SWAP_MIB} MiB"),
-        ));
+    if let Err(m) = check_swap_size(a.disk.swap_size_mib) {
+        errs.push(err(Field::SwapSize, m));
     }
     if let Err(m) = check_encryption(
         a.disk.encrypt,
@@ -88,21 +85,18 @@ pub fn validate(a: &Answers, catalog: &Catalog) -> Vec<ValidationError> {
     if let Err(m) = check_hostname(&a.system.hostname) {
         errs.push(err(Field::Hostname, m));
     }
-    if !catalog.has_locale(&a.system.locale) {
-        errs.push(err(Field::Locale, "not a supported locale"));
+    if let Err(m) = check_locale(catalog, &a.system.locale) {
+        errs.push(err(Field::Locale, m));
     }
-    if !catalog.has_timezone(&a.system.timezone) {
-        errs.push(err(Field::Timezone, "unknown timezone"));
+    if let Err(m) = check_timezone(catalog, &a.system.timezone) {
+        errs.push(err(Field::Timezone, m));
     }
-    match catalog.layout(&a.system.keyboard_layout) {
-        None => errs.push(err(Field::KeyboardLayout, "unknown keyboard layout")),
-        Some(layout) => {
+    match check_keyboard_layout(catalog, &a.system.keyboard_layout) {
+        Err(m) => errs.push(err(Field::KeyboardLayout, m)),
+        Ok(()) => {
             if let Some(v) = &a.system.keyboard_variant {
-                if !layout.variants.iter().any(|x| &x.name == v) {
-                    errs.push(err(
-                        Field::KeyboardVariant,
-                        format!("unknown variant for layout '{}'", layout.name),
-                    ));
+                if let Err(m) = check_keyboard_variant(catalog, &a.system.keyboard_layout, v) {
+                    errs.push(err(Field::KeyboardVariant, m));
                 }
             }
         }
@@ -110,10 +104,55 @@ pub fn validate(a: &Answers, catalog: &Catalog) -> Vec<ValidationError> {
     errs
 }
 
-const MAX_SWAP_MIB: u32 = 1024 * 1024;
+pub const MAX_SWAP_MIB: u32 = 1024 * 1024;
+
+// The per-field checks below are public so that a form can check its own field
+// without building a whole `Answers`; [`validate`] is these, applied to every field.
+pub fn check_swap_size(mib: u32) -> Result<(), String> {
+    if mib > MAX_SWAP_MIB {
+        Err(format!("must be at most {MAX_SWAP_MIB} MiB"))
+    } else {
+        Ok(())
+    }
+}
+
+pub fn check_timezone(catalog: &Catalog, tz: &str) -> Result<(), String> {
+    if catalog.has_timezone(tz) {
+        Ok(())
+    } else {
+        Err("unknown timezone".into())
+    }
+}
+
+pub fn check_locale(catalog: &Catalog, locale: &str) -> Result<(), String> {
+    if catalog.has_locale(locale) {
+        Ok(())
+    } else {
+        Err("not a supported locale".into())
+    }
+}
+
+pub fn check_keyboard_layout(catalog: &Catalog, layout: &str) -> Result<(), String> {
+    if catalog.layout(layout).is_some() {
+        Ok(())
+    } else {
+        Err("unknown keyboard layout".into())
+    }
+}
+
+pub fn check_keyboard_variant(
+    catalog: &Catalog,
+    layout: &str,
+    variant: &str,
+) -> Result<(), String> {
+    match catalog.layout(layout) {
+        Some(l) if l.variants.iter().any(|v| v.name == variant) => Ok(()),
+        _ => Err(format!("unknown variant for layout '{layout}'")),
+    }
+}
 const MIN_ENCRYPTION_PASSWORD_LEN: usize = 8;
 
-fn check_encryption(encrypt: bool, password: Option<&str>) -> Result<(), String> {
+pub fn check_encryption(encrypt: bool, password: Option<&str>) -> Result<(), String> {
     match (encrypt, password) {
         (true, None) => Err("required when encryption is enabled".into()),
         (true, Some(p)) if p.chars().count() < MIN_ENCRYPTION_PASSWORD_LEN => Err(format!(
@@ -124,7 +163,7 @@ fn check_encryption(encrypt: bool, password: Option<&str>) -> Result<(), String>
     }
 }
 
-fn check_device(d: &str) -> Result<(), String> {
+pub fn check_device(d: &str) -> Result<(), String> {
     let name = d
         .strip_prefix("/dev/")
         .ok_or("must be a path under /dev/")?;
@@ -139,7 +178,7 @@ fn check_device(d: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn check_username(n: &str) -> Result<(), String> {
+pub fn check_username(n: &str) -> Result<(), String> {
     const RESERVED: &[&str] = &["root", "nobody", "nixbld"];
     if n.is_empty() || n.len() > 32 {
         return Err("must be 1-32 characters".into());
@@ -158,7 +197,7 @@ fn check_username(n: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn check_password_hash(h: &str) -> Result<(), String> {
+pub fn check_password_hash(h: &str) -> Result<(), String> {
     const PREFIXES: &[&str] = &["$y$", "$6$", "$5$", "$2b$"];
     if !PREFIXES.iter().any(|p| h.starts_with(p)) {
         return Err("must be a crypt hash (yescrypt, sha512, sha256 or bcrypt)".into());
@@ -175,7 +214,7 @@ fn check_password_hash(h: &str) -> Result<(), String> {
 /// domain part), 1-63 characters, alphanumeric at both ends, with `-` and `_`
 /// allowed in between. Anything else passes here and then fails when the
 /// configuration is evaluated, after the disk has been wiped.
-fn check_hostname(h: &str) -> Result<(), String> {
+pub fn check_hostname(h: &str) -> Result<(), String> {
     if h.is_empty() || h.len() > 63 {
         return Err("must be 1-63 characters".into());
     }
