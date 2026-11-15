@@ -24,6 +24,40 @@ pub struct Host {
     pub state_version: String,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum HostError {
+    #[error("unsupported architecture: {0}")]
+    UnsupportedArch(String),
+    #[error("NUN_STATE_VERSION is not set (the Nix package sets it to the nixpkgs release)")]
+    MissingStateVersion,
+}
+
+impl Host {
+    /// Detect boot mode and architecture of the running machine. The state
+    /// version comes from `NUN_STATE_VERSION`, set by the Nix package.
+    pub fn detect() -> Result<Self, HostError> {
+        let system = match std::env::consts::ARCH {
+            "x86_64" => "x86_64-linux",
+            "aarch64" => "aarch64-linux",
+            other => return Err(HostError::UnsupportedArch(other.into())),
+        };
+        let state_version = std::env::var("NUN_STATE_VERSION")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .ok_or(HostError::MissingStateVersion)?;
+        let boot = if std::path::Path::new("/sys/firmware/efi").exists() {
+            Boot::Uefi
+        } else {
+            Boot::Bios
+        };
+        Ok(Self {
+            boot,
+            system: system.into(),
+            state_version,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeneratedFiles {
     pub flake_nix: String,
