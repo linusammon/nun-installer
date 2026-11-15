@@ -88,8 +88,8 @@ pub fn check(f: &Facts) -> Vec<SafetyError> {
 }
 
 /// Gather facts about `device` and check them.
-pub fn check_disk(device: &str) -> Vec<SafetyError> {
-    check(&gather(Path::new(device)))
+pub fn check_disk(device: &Path) -> Vec<SafetyError> {
+    check(&gather(device))
 }
 
 pub fn gather(device: &Path) -> Facts {
@@ -377,11 +377,11 @@ mod tests {
     #[test]
     fn real_system_rejects_non_block_and_missing() {
         assert_eq!(
-            check_disk("/dev/null"),
+            check_disk(Path::new("/dev/null")),
             [SafetyError::NotBlockDevice(p("/dev/null"))]
         );
         assert_eq!(
-            check_disk("/dev/definitely-not-here"),
+            check_disk(Path::new("/dev/definitely-not-here")),
             [SafetyError::NotFound(p("/dev/definitely-not-here"))]
         );
     }

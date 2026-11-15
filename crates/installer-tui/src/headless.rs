@@ -34,7 +34,7 @@ pub fn run(config: &Path, dry_run: bool, yes: bool) -> Result<(), String> {
         crate::privilege::require_root();
     }
 
-    let problems = check_disk(&answers.disk.device);
+    let problems = check_disk(Path::new(&answers.disk.device));
     if dry_run {
         for p in &problems {
             eprintln!("warning: {p}");

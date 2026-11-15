@@ -30,7 +30,7 @@ const IGNORED_PREFIXES: &[&str] = &["loop", "ram", "zram", "sr", "fd", "md", "dm
 pub fn list_disks() -> Vec<DiskInfo> {
     let mut disks = scan(Path::new("/sys/block"));
     for d in &mut disks {
-        d.rejected = check_disk(&d.path.to_string_lossy());
+        d.rejected = check_disk(&d.path);
     }
     disks
 }

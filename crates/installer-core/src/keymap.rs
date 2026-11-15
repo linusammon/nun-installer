@@ -10,7 +10,7 @@ use std::process::Command;
 #[derive(Debug, thiserror::Error)]
 pub enum KeymapError {
     #[error("cannot run {program}: {source}")]
-    Spawn {
+    Run {
         program: String,
         source: std::io::Error,
     },
@@ -68,7 +68,7 @@ pub fn apply_console_keymap(
     if let Some(v) = variant {
         ckbcomp.args(["-variant", v]);
     }
-    let keymap = ckbcomp.output().map_err(|source| KeymapError::Spawn {
+    let keymap = ckbcomp.output().map_err(|source| KeymapError::Run {
         program: tools.ckbcomp.display().to_string(),
         source,
     })?;
@@ -81,7 +81,7 @@ pub fn apply_console_keymap(
         Command::new(&tools.loadkeys).args(["-u", "-q", "-"]),
         &keymap.stdout,
     )
-    .map_err(|source| KeymapError::Spawn {
+    .map_err(|source| KeymapError::Run {
         program: tools.loadkeys.display().to_string(),
         source,
     })?;
@@ -109,7 +109,7 @@ mod tests {
     fn apply(tools: &KeymapTools, layout: &str, variant: Option<&str>) -> Result<(), KeymapError> {
         for _ in 0..50 {
             match apply_console_keymap(tools, layout, variant) {
-                Err(KeymapError::Spawn { source, .. }) if source.raw_os_error() == Some(26) => {
+                Err(KeymapError::Run { source, .. }) if source.raw_os_error() == Some(26) => {
                     std::thread::sleep(std::time::Duration::from_millis(20));
                 }
                 other => return other,
@@ -206,7 +206,7 @@ mod tests {
         };
         assert!(matches!(
             apply_console_keymap(&tools, "us", None),
-            Err(KeymapError::Spawn { .. })
+            Err(KeymapError::Run { .. })
         ));
     }
 
