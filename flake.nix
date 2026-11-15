@@ -4,6 +4,10 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     crane.url = "github:ipetkov/crane";
+    disko = {
+      url = "github:nix-community/disko";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     devenv = {
       url = "github:cachix/devenv";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -18,7 +22,14 @@
   };
 
   outputs =
-    inputs@{ self, nixpkgs, crane, devenv, ... }:
+    inputs@{
+      self,
+      nixpkgs,
+      crane,
+      devenv,
+      disko,
+      ...
+    }:
     let
       systems = [
         "x86_64-linux"
@@ -104,6 +115,15 @@
           );
           fmt = c.craneLib.cargoFmt { inherit (c.commonArgs) src; };
           tests = c.craneLib.cargoTest (c.commonArgs // { inherit (c) cargoArtifacts; });
+        }
+        // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
+          vm-install-plain = import ./nix/tests/install.nix {
+            inherit pkgs;
+            inherit (self.packages.${system}) installer;
+            inherit disko;
+            nixpkgsSrc = nixpkgs.outPath;
+            nixpkgsNarHash = nixpkgs.narHash;
+          };
         }
       );
 

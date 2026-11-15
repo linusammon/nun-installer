@@ -1,0 +1,286 @@
+# End-to-end test: run the installer headlessly in a VM against a blank disk,
+# then check what it left behind. The VM has no network, so everything the
+# install needs must already be in its store.
+{
+  pkgs,
+  installer,
+  disko,
+  nixpkgsSrc,
+  nixpkgsNarHash,
+  encrypt ? false,
+}:
+let
+  inherit (pkgs) lib;
+  system = pkgs.stdenv.hostPlatform.system;
+  diskoSrc = disko.outPath;
+
+  encryptionPassword = "correct horse battery";
+
+  answers = {
+    schema_version = 1;
+    disk = {
+      device = "/dev/vda";
+      swap_size_mib = 512;
+      inherit encrypt;
+    } // lib.optionalAttrs encrypt { encryption_password = encryptionPassword; };
+    user = {
+      name = "alice";
+      # hunter2hunter2
+      password_hash = "$6$nunsalt1$Hb.bACmNA/De96M6wpOm3Hh9FtswGIrqcRQUDXbB0vaLgZp5JiF4vpJRqz6mzaRcJuzfu7rWHcNj4ChlHLe/4/";
+    };
+    system = {
+      hostname = "nun-test";
+      locale = "en_US.UTF-8";
+      timezone = "Europe/Berlin";
+      keyboard_layout = "ch";
+      keyboard_variant = "fr";
+    };
+  };
+  answersFile = pkgs.writeText "answers.json" (builtins.toJSON answers);
+
+  env = lib.concatStringsSep " " [
+    "NUN_NIXPKGS_URL=path:${nixpkgsSrc}"
+    "NUN_DISKO_URL=path:${diskoSrc}"
+  ];
+
+  # Mirrors what the installer generates. Nothing here is installed: building it
+  # puts the closure of the target system and of the disko scripts into the
+  # VM's store, which has no network to fetch anything.
+  # Loaded the same way the VM loads it (as a path flake) so that documentation
+  # derivations, which embed the revision, come out identical.
+  nixpkgsFlake = builtins.getFlake (
+    builtins.unsafeDiscardStringContext "path:${nixpkgsSrc}?narHash=${nixpkgsNarHash}"
+  );
+  target = nixpkgsFlake.lib.nixosSystem {
+    inherit system;
+    modules = [ targetModule ];
+  };
+  targetModule =
+    { ... }:
+    let
+      mountOptions = [
+        "compress=zstd"
+        "noatime"
+      ];
+      btrfs = {
+        type = "btrfs";
+        extraArgs = [ "-f" ];
+        subvolumes = {
+          "/root" = {
+            mountpoint = "/";
+            inherit mountOptions;
+          };
+          "/home" = {
+            mountpoint = "/home";
+            inherit mountOptions;
+          };
+          "/nix" = {
+            mountpoint = "/nix";
+            inherit mountOptions;
+          };
+          "/swap" = {
+            mountpoint = "/.swapvol";
+            swap.swapfile.size = "512M";
+          };
+        };
+      };
+    in
+    {
+      imports = [ disko.nixosModules.disko ];
+
+      disko.devices.disk.main = {
+        type = "disk";
+        device = "/dev/vda";
+        content = {
+          type = "gpt";
+          partitions = {
+            ESP = {
+              size = "512M";
+              type = "EF00";
+              content = {
+                type = "filesystem";
+                format = "vfat";
+                mountpoint = "/boot";
+                mountOptions = [ "umask=0077" ];
+              };
+            };
+            root = {
+              size = "100%";
+              content =
+                if encrypt then
+                  {
+                    type = "luks";
+                    name = "cryptroot";
+                    passwordFile = "/tmp/nun-luks-password";
+                    settings.allowDiscards = true;
+                    content = btrfs;
+                  }
+                else
+                  btrfs;
+            };
+          };
+        };
+      };
+
+      boot.loader.systemd-boot.enable = true;
+      boot.loader.efi.canTouchEfiVariables = true;
+      boot.initrd.availableKernelModules = [
+        "virtio_pci"
+        "virtio_blk"
+        "ahci"
+        "xhci_pci"
+        "sd_mod"
+      ];
+
+      networking.hostName = "nun-test";
+      i18n.defaultLocale = "en_US.UTF-8";
+      time.timeZone = "Europe/Berlin";
+      services.xserver.xkb = {
+        layout = "ch";
+        variant = "fr";
+      };
+      console.useXkbConfig = true;
+      users.users.alice = {
+        isNormalUser = true;
+        extraGroups = [
+          "wheel"
+          "networkmanager"
+        ];
+      };
+      programs.noctalia = {
+        enable = true;
+        systemd.enable = true;
+        recommendedServices.enable = true;
+      };
+      programs.umbriel.enable = true;
+      services.displayManager.noctalia-greeter.enable = true;
+      nix.settings.experimental-features = [
+        "nix-command"
+        "flakes"
+      ];
+      system.stateVersion = lib.trivial.release;
+    };
+  targetBuild = target.config.system.build;
+in
+pkgs.testers.runNixOSTest {
+  name = "nun-installer-${if encrypt then "encrypted" else "plain"}";
+
+  passthru = { inherit target; };
+
+  nodes.installer =
+    { ... }:
+    {
+      virtualisation = {
+        # Builds and evaluates inside the VM, so it needs room.
+        cores = 8;
+        memorySize = 8192;
+        diskSize = 24 * 1024;
+        # The target disk is /dev/vda; the installer itself runs from a small /dev/vdb.
+        diskImage = "./target.qcow2";
+        emptyDiskImages = [ 1024 ];
+        rootDevice = "/dev/vdb";
+        fileSystems."/".autoFormat = true;
+        # The installer picks the bootloader from how it was booted.
+        useEFIBoot = true;
+      };
+
+      nix = {
+        nixPath = [ "nixpkgs=${nixpkgsSrc}" ];
+        settings = {
+          experimental-features = [
+            "nix-command"
+            "flakes"
+          ];
+          substituters = lib.mkForce [ ];
+          hashed-mirrors = null;
+          connect-timeout = 1;
+        };
+      };
+
+      environment.systemPackages = [
+        installer
+        disko.packages.${system}.disko
+      ];
+
+      # No network: everything nixos-install and disko build must already be here.
+      system.extraDependencies =
+        [
+          targetBuild.toplevel
+          targetBuild.destroyFormatMount
+          targetBuild.formatScript
+          targetBuild.mountScript
+        ]
+        ++ (with pkgs; [
+          stdenv
+          stdenvNoCC
+          bintools
+          brotli
+          brotli.dev
+          brotli.lib
+          desktop-file-utils
+          docbook5
+          docbook_xsl_ns
+          hello
+          kbd.dev
+          kmod.dev
+          libarchive.dev
+          libcap-text-verifier
+          libxml2.bin
+          libxslt.bin
+          nixos-artwork.wallpapers.simple-dark-gray-bottom
+          perlPackages.ConfigIniFiles
+          perlPackages.FileSlurp
+          perlPackages.JSON
+          perlPackages.ListCompare
+          perlPackages.XMLLibXML
+          (python3.withPackages (p: [ p.mistune ]))
+          shared-mime-info
+          sudo
+          switch-to-configuration-ng
+          texinfo
+          unionfs-fuse
+          lndir
+          shellcheck-minimal
+          systemd.out
+          curl
+          zstd.bin
+          mypy
+        ]);
+    };
+
+  testScript = ''
+    installer.start()
+    installer.wait_for_unit("multi-user.target")
+
+    installer.succeed("test -d /sys/firmware/efi")
+    installer.succeed("lsblk >&2")
+
+    with subtest("dry run touches nothing"):
+        installer.succeed("${env} nun-installer --config ${answersFile} --dry-run >&2")
+        installer.fail("test -e /mnt/etc")
+
+    with subtest("refuses to wipe without --yes"):
+        installer.fail("${env} nun-installer --config ${answersFile}")
+
+    with subtest("install"):
+        installer.succeed("${env} nun-installer --config ${answersFile} --yes >&2")
+
+    with subtest("generated config is in place"):
+        for f in ["flake.nix", "configuration.nix", "disko.nix", "hardware-configuration.nix"]:
+            installer.succeed(f"test -s /mnt/etc/nixos/{f}")
+        installer.succeed("grep -q 'programs.umbriel.enable = true' /mnt/etc/nixos/configuration.nix")
+
+    with subtest("password is set but not in the config"):
+        installer.succeed("grep -q '^alice:\\$6\\$' /mnt/etc/shadow")
+        installer.fail("grep -rq 'nunsalt1' /mnt/etc/nixos")
+        installer.succeed("nixos-enter --root /mnt -c 'id -nG alice' | grep -qw wheel")
+
+    with subtest("secrets are cleaned up"):
+        installer.fail("test -e /tmp/nun-luks-password")
+        installer.fail("test -e /tmp/nun-installer")
+
+    with subtest("bootloader is installed"):
+        installer.succeed("test -e /mnt/boot/EFI/BOOT/BOOTX64.EFI")
+        installer.succeed("test -L /mnt/nix/var/nix/profiles/system")
+  '';
+}
