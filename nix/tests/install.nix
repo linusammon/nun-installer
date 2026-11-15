@@ -204,7 +204,6 @@ pkgs.testers.runNixOSTest {
 
       environment.systemPackages = [
         installer
-        disko.packages.${system}.disko
         pkgs.cryptsetup
         pkgs.tmux
         pkgs.kbd
@@ -291,6 +290,8 @@ pkgs.testers.runNixOSTest {
     installer.wait_for_unit("multi-user.target")
 
     installer.succeed("test -d /sys/firmware/efi")
+    # The installer must bring disko with it; the VM itself has none.
+    installer.fail("command -v disko")
     installer.succeed("lsblk >&2")
 
     if tui:

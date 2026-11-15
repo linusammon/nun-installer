@@ -69,7 +69,8 @@
                   --set-default NUN_STATE_VERSION ${pkgs.lib.trivial.release} \
                   --set-default NUN_NIXPKGS_PATH ${pkgs.path} \
                   --set-default NUN_CKBCOMP ${pkgs.ckbcomp}/bin/ckbcomp \
-                  --set-default NUN_LOADKEYS ${pkgs.kbd}/bin/loadkeys
+                  --set-default NUN_LOADKEYS ${pkgs.kbd}/bin/loadkeys \
+                  --suffix PATH : ${pkgs.lib.makeBinPath [ disko.packages.${system}.disko ]}
               '';
               meta.mainProgram = "nun-installer";
             }
