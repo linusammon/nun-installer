@@ -43,6 +43,27 @@ with:
 nix build .#checks.x86_64-linux.vm-install-encrypted -L
 ```
 
+## Try it in a VM
+
+Your own machine will not get past the Disk step, because its disks are in use.
+A VM with a blank disk is the safe way to walk through the whole installer:
+
+```sh
+nix run .#vm-install   # boots a VM straight into the installer
+nix run .#vm-boot      # boots the system the installer produced
+```
+
+`vm-install` opens a QEMU window running the real installer on a Linux console,
+with UEFI, user-mode networking, and a blank 20 GiB disk at `./nun-target.qcow2`.
+The VM's own disk shows up as unavailable, as it should. The install is online,
+so it downloads the system. Both need KVM.
+
+- When it finishes, close the window. Enter on the last screen reboots the
+  installer VM, not the new system. Run `vm-boot` for that.
+- Delete `nun-target.qcow2` to start from a blank disk again, or point
+  `NUN_VM_DISK` somewhere else.
+- Ctrl+Alt+G releases the mouse from the QEMU window.
+
 ## Layout
 
 - `crates/installer-core`: answers, validation, config generation, install plan, executors, safety checks. No UI.

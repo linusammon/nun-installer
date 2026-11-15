@@ -79,6 +79,17 @@
           inherit installer;
           default = installer;
         }
+        // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") (
+          let
+            vm = import ./nix/vm.nix {
+              inherit pkgs nixpkgs installer system;
+            };
+          in
+          {
+            vm-install = vm.install;
+            vm-boot = vm.boot;
+          }
+        )
       );
 
       apps = forEachSystem (
