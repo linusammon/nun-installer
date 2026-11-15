@@ -239,10 +239,6 @@ pkgs.testers.runNixOSTest {
           targetBuild.formatScript
           targetBuild.mountScript
         ]
-        ++ lib.optional pinned (
-          # The pinned lock names these store paths, so they must be present.
-          pkgs.writeText "pinned-inputs" "${nixpkgsSrc} ${diskoSrc}"
-        )
         ++ (with pkgs; [
           stdenv
           stdenvNoCC

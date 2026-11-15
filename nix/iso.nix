@@ -25,17 +25,10 @@ nixpkgs.lib.nixosSystem {
           "nix-command"
           "flakes"
         ];
-        environment.systemPackages = [ installer ];
-
-        # The profile logs `nixos` in on the first console; start the installer
-        # there. It escalates through the profile's passwordless sudo.
-        programs.bash.loginShellInit = ''
-          if [ "$(tty)" = /dev/tty1 ] && [ -z "$NUN_STARTED" ]; then
-            export NUN_STARTED=1
-            nun-installer
-          fi
-        '';
       }
     )
+    # The profile logs `nixos` in on the first console and the installer starts
+    # there. It escalates through the profile's passwordless sudo.
+    (import ./session.nix { inherit installer; })
   ];
 }

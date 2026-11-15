@@ -88,6 +88,7 @@ to system paths or must be set by hand:
 | `NUN_ZONE_TAB`, `NUN_LOCALE_SUPPORTED`, `NUN_XKB_BASE_LST` | timezone, locale and keyboard lists |
 | `NUN_STATE_VERSION` | `system.stateVersion` for the new system (required) |
 | `NUN_NIXPKGS_PATH` | nixpkgs used to evaluate disko |
+| `NUN_DISKO_PATH` | disko source the pinned lock names; kept in the closure so it resolves offline |
 | `NUN_NIXPKGS_URL`, `NUN_DISKO_URL` | flake inputs written into the generated flake |
 | `NUN_LOCK_FILE` | the installer's `flake.lock`, reduced to nixpkgs and disko and written to `/etc/nixos` |
 | `NUN_CKBCOMP`, `NUN_LOADKEYS` | tools that load the chosen keyboard layout into the console |

@@ -32,18 +32,11 @@ let
             "nix-command"
             "flakes"
           ];
-          environment.systemPackages = [ installer ];
-
-          # Log in as root on the first console and start the installer there.
+          # Log in as root on the first console; the installer starts there.
           services.getty.autologinUser = "root";
-          programs.bash.loginShellInit = ''
-            if [ "$(tty)" = /dev/tty1 ] && [ -z "$NUN_STARTED" ]; then
-              export NUN_STARTED=1
-              nun-installer
-            fi
-          '';
         }
       )
+      (import ./session.nix { inherit installer; })
     ];
   };
   runVm = "${installerSystem.config.system.build.vm}/bin/run-nun-installer-vm";

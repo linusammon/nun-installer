@@ -69,7 +69,8 @@
                   --set-default NUN_LOCALE_SUPPORTED ${pkgs.glibcLocales}/share/i18n/SUPPORTED \
                   --set-default NUN_XKB_BASE_LST ${pkgs.xkeyboard-config}/share/X11/xkb/rules/base.lst \
                   --set-default NUN_STATE_VERSION ${pkgs.lib.trivial.release} \
-                  --set-default NUN_NIXPKGS_PATH ${pkgs.path} \
+                  --set-default NUN_NIXPKGS_PATH ${nixpkgs.outPath} \
+                  --set-default NUN_DISKO_PATH ${disko.outPath} \
                   --set-default NUN_CKBCOMP ${pkgs.ckbcomp}/bin/ckbcomp \
                   --set-default NUN_LOADKEYS ${pkgs.kbd}/bin/loadkeys \
                   --set-default NUN_LOCK_FILE ${./flake.lock} \
@@ -82,6 +83,9 @@
         {
           inherit installer;
           default = installer;
+          # Nothing in the ISO is specific to one architecture; only its boot test is.
+          iso-online =
+            (import ./nix/iso.nix { inherit nixpkgs installer system; }).config.system.build.isoImage;
         }
         // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") (
           let
@@ -92,8 +96,6 @@
           {
             vm-install = vm.install;
             vm-boot = vm.boot;
-            iso-online =
-              (import ./nix/iso.nix { inherit nixpkgs installer system; }).config.system.build.isoImage;
           }
         )
       );
@@ -111,6 +113,18 @@
         system: pkgs:
         let
           c = mkCommon pkgs;
+          vmTest =
+            flags:
+            import ./nix/tests/install.nix (
+              {
+                inherit pkgs disko;
+                inherit (self.packages.${system}) installer;
+                nixpkgsSrc = nixpkgs.outPath;
+                nixpkgsNarHash = nixpkgs.narHash;
+                nixpkgsRev = nixpkgs.rev;
+              }
+              // flags
+            );
         in
         {
           inherit (self.packages.${system}) installer;
@@ -129,51 +143,16 @@
             inherit pkgs nixpkgs system;
             inherit (self.packages.${system}) installer;
           };
-          vm-install-plain = import ./nix/tests/install.nix {
-            inherit pkgs;
-            inherit (self.packages.${system}) installer;
-            inherit disko;
-            nixpkgsSrc = nixpkgs.outPath;
-            nixpkgsNarHash = nixpkgs.narHash;
-            nixpkgsRev = nixpkgs.rev;
-          };
-          vm-install-encrypted = import ./nix/tests/install.nix {
-            inherit pkgs;
-            inherit (self.packages.${system}) installer;
-            inherit disko;
-            nixpkgsSrc = nixpkgs.outPath;
-            nixpkgsNarHash = nixpkgs.narHash;
-            nixpkgsRev = nixpkgs.rev;
+          vm-install-plain = vmTest { };
+          vm-install-encrypted = vmTest { encrypt = true; };
+          vm-install-pinned = vmTest { pinned = true; };
+          vm-install-tui = vmTest {
             encrypt = true;
+            tui = true;
           };
-          vm-install-pinned = import ./nix/tests/install.nix {
-            inherit pkgs;
-            inherit (self.packages.${system}) installer;
-            inherit disko;
-            nixpkgsSrc = nixpkgs.outPath;
-            nixpkgsNarHash = nixpkgs.narHash;
-            nixpkgsRev = nixpkgs.rev;
-            pinned = true;
-          };
-          vm-install-tui-user = import ./nix/tests/install.nix {
-            inherit pkgs;
-            inherit (self.packages.${system}) installer;
-            inherit disko;
-            nixpkgsSrc = nixpkgs.outPath;
-            nixpkgsNarHash = nixpkgs.narHash;
-            nixpkgsRev = nixpkgs.rev;
+          vm-install-tui-user = vmTest {
             tui = true;
             asUser = true;
-          };
-          vm-install-tui = import ./nix/tests/install.nix {
-            inherit pkgs;
-            inherit (self.packages.${system}) installer;
-            inherit disko;
-            nixpkgsSrc = nixpkgs.outPath;
-            nixpkgsNarHash = nixpkgs.narHash;
-            nixpkgsRev = nixpkgs.rev;
-            encrypt = true;
-            tui = true;
           };
         }
       );
