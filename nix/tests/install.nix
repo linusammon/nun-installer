@@ -17,6 +17,9 @@ let
 
   encryptionPassword = "correct horse battery";
 
+  # The interactive installer does not ask for one and always uses "nun".
+  hostname = if tui then "nun" else "nun-test";
+
   answers = {
     schema_version = 1;
     disk = {
@@ -30,7 +33,7 @@ let
       password_hash = "$6$nunsalt1$Hb.bACmNA/De96M6wpOm3Hh9FtswGIrqcRQUDXbB0vaLgZp5JiF4vpJRqz6mzaRcJuzfu7rWHcNj4ChlHLe/4/";
     };
     system = {
-      hostname = "nun-test";
+      inherit hostname;
       locale = "en_US.UTF-8";
       timezone = "Europe/Berlin";
       keyboard_layout = "ch";
@@ -135,7 +138,7 @@ let
         "sd_mod"
       ];
 
-      networking.hostName = "nun-test";
+      networking.hostName = hostname;
       i18n.defaultLocale = "en_US.UTF-8";
       time.timeZone = "Europe/Berlin";
       services.xserver.xkb = {
@@ -334,17 +337,13 @@ pkgs.testers.runNixOSTest {
                 type_text("${encryptionPassword}")
             send("Enter")
 
+            # Enter moves from field to field; the last one submits.
             wait_for("Confirm password")
             type_text("alice")
-            send("Tab")
-            type_text("hunter2hunter2")
-            send("Tab")
+            send("Enter")
             type_text("hunter2hunter2")
             send("Enter")
-
-            wait_for("Hostname —")
-            send("BSpace BSpace BSpace")
-            type_text("nun-test")
+            type_text("hunter2hunter2")
             send("Enter")
 
             wait_for("EVERYTHING ON /dev/vda WILL BE ERASED")
@@ -399,7 +398,7 @@ pkgs.testers.runNixOSTest {
             r"""sed -i '/^ *\.\/configuration\.nix$/a\          "${instrumentation}"' /mnt/etc/nixos/flake.nix"""
         )
         installer.succeed("grep -q test-instrumentation /mnt/etc/nixos/flake.nix")
-        installer.succeed("nixos-install --root /mnt --no-root-passwd --flake /mnt/etc/nixos#nun-test >&2")
+        installer.succeed("nixos-install --root /mnt --no-root-passwd --flake /mnt/etc/nixos#${hostname} >&2")
 
     installer.succeed("sync; umount -R /mnt")
     if encrypted:
@@ -416,7 +415,7 @@ pkgs.testers.runNixOSTest {
         target.wait_for_unit("multi-user.target", timeout=300)
 
     with subtest("installed system is what we asked for"):
-        target.succeed("hostname | grep -qx nun-test")
+        target.succeed("hostname | grep -qx ${hostname}")
         target.succeed("id -nG alice | grep -qw wheel")
         target.succeed("su alice -c 'echo hunter2hunter2 | sudo -S -k true'")
         target.succeed("findmnt -no FSTYPE / | grep -qx btrfs")
