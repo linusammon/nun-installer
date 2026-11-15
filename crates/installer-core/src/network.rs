@@ -239,8 +239,9 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let open = listener.local_addr().unwrap().port();
         assert!(can_connect("127.0.0.1", open, Duration::from_secs(2)));
-        drop(listener);
-        assert!(!can_connect("127.0.0.1", open, Duration::from_secs(2)));
+        // A port that was just closed can be reused as another test's ephemeral
+        // source port and even connect to itself, so use one that never is.
+        assert!(!can_connect("127.0.0.1", 1, Duration::from_secs(2)));
     }
 
     #[test]
