@@ -14,6 +14,8 @@
   i18n.defaultLocale = {{ locale | nix }};
   time.timeZone = {{ timezone | nix }};
 
+  # System-wide keyboard layout. The console follows it (useXkbConfig) and umbriel
+  # reads it from systemd-localed, so there is a single place to change it.
   services.xserver.xkb = {
     layout = {{ keyboard_layout | nix }};
 {% if keyboard_variant %}
@@ -28,18 +30,8 @@
       "wheel"
       "networkmanager"
     ];
-    hashedPassword = {{ password_hash | nix }};
   };
 
-{% if swap_size_mib > 0 %}
-  swapDevices = [
-    {
-      device = "/swapfile";
-      size = {{ swap_size_mib }};
-    }
-  ];
-
-{% endif %}
   # The nun stack.
   programs.noctalia.enable = true;
   programs.umbriel.enable = true;

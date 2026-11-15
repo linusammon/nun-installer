@@ -1,4 +1,5 @@
 use crate::answers::{Answers, SCHEMA_VERSION};
+use crate::catalog::Catalog;
 
 /// Which answer a validation error belongs to, so the TUI can show it per field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,9 +31,9 @@ fn err(field: Field, message: impl Into<String>) -> ValidationError {
     }
 }
 
-/// Pure validation of answers. Checks that need the live system (disk exists,
-/// is not mounted, ...) belong to the safety checks, not here.
-pub fn validate(a: &Answers) -> Vec<ValidationError> {
+/// Pure validation of answers against the catalog. Checks that need the live
+/// system (disk exists, is not mounted, ...) belong to the safety checks, not here.
+pub fn validate(a: &Answers, catalog: &Catalog) -> Vec<ValidationError> {
     let mut errs = Vec::new();
 
     if a.schema_version != SCHEMA_VERSION {
@@ -65,18 +66,23 @@ pub fn validate(a: &Answers) -> Vec<ValidationError> {
     if let Err(m) = check_hostname(&a.system.hostname) {
         errs.push(err(Field::Hostname, m));
     }
-    if let Err(m) = check_locale(&a.system.locale) {
-        errs.push(err(Field::Locale, m));
+    if !catalog.has_locale(&a.system.locale) {
+        errs.push(err(Field::Locale, "not a supported locale"));
     }
-    if let Err(m) = check_timezone(&a.system.timezone) {
-        errs.push(err(Field::Timezone, m));
+    if !catalog.has_timezone(&a.system.timezone) {
+        errs.push(err(Field::Timezone, "unknown timezone"));
     }
-    if let Err(m) = check_keyboard(&a.system.keyboard_layout) {
-        errs.push(err(Field::KeyboardLayout, m));
-    }
-    if let Some(v) = &a.system.keyboard_variant {
-        if let Err(m) = check_keyboard_variant(v) {
-            errs.push(err(Field::KeyboardVariant, m));
+    match catalog.layout(&a.system.keyboard_layout) {
+        None => errs.push(err(Field::KeyboardLayout, "unknown keyboard layout")),
+        Some(layout) => {
+            if let Some(v) = &a.system.keyboard_variant {
+                if !layout.variants.iter().any(|x| &x.name == v) {
+                    errs.push(err(
+                        Field::KeyboardVariant,
+                        format!("unknown variant for layout '{}'", layout.name),
+                    ));
+                }
+            }
         }
     }
     errs
@@ -93,18 +99,6 @@ fn check_encryption(encrypt: bool, password: Option<&str>) -> Result<(), String>
         )),
         (false, Some(_)) => Err("must not be set when encryption is disabled".into()),
         _ => Ok(()),
-    }
-}
-
-fn check_keyboard_variant(v: &str) -> Result<(), String> {
-    if !v.is_empty()
-        && v.len() <= 32
-        && v.chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '-'))
-    {
-        Ok(())
-    } else {
-        Err("expected an XKB variant like dvorak or de".into())
     }
 }
 
@@ -174,65 +168,17 @@ fn check_hostname(h: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Shape check only: `lang_COUNTRY[.charset][@modifier]`, e.g. `en_US.UTF-8`.
-fn check_locale(l: &str) -> Result<(), String> {
-    let (lang, rest) = l.split_once('_').ok_or("expected form like en_US.UTF-8")?;
-    let country: String = rest.chars().take_while(char::is_ascii_alphabetic).collect();
-    let tail = &rest[country.len()..];
-    let lang_ok = (2..=3).contains(&lang.len()) && lang.chars().all(|c| c.is_ascii_lowercase());
-    let country_ok = country.len() == 2 && country.chars().all(|c| c.is_ascii_uppercase());
-    let tail_ok = tail
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '@' | '_'));
-    if lang_ok && country_ok && tail_ok {
-        Ok(())
-    } else {
-        Err("expected form like en_US.UTF-8".into())
-    }
-}
-
-/// Shape check only: `Area/Location` (or `UTC`). Existence is checked against tzdata at runtime.
-fn check_timezone(t: &str) -> Result<(), String> {
-    if t == "UTC" {
-        return Ok(());
-    }
-    let parts: Vec<&str> = t.split('/').collect();
-    let ok = (2..=3).contains(&parts.len())
-        && parts.iter().all(|p| {
-            !p.is_empty()
-                && p.chars()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '+'))
-        });
-    if ok {
-        Ok(())
-    } else {
-        Err("expected form like Europe/Berlin".into())
-    }
-}
-
-fn check_keyboard(k: &str) -> Result<(), String> {
-    if !k.is_empty()
-        && k.len() <= 16
-        && k.chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
-    {
-        Ok(())
-    } else {
-        Err("expected an XKB layout like us or de".into())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::answers::*;
+    use crate::catalog::test_catalog;
 
     fn good() -> Answers {
         Answers {
             schema_version: SCHEMA_VERSION,
             disk: Disk {
                 device: "/dev/nvme0n1".into(),
-                filesystem: Filesystem::Ext4,
                 swap_size_mib: 4096,
                 encrypt: false,
                 encryption_password: None,
@@ -246,18 +192,21 @@ mod tests {
                 locale: "en_US.UTF-8".into(),
                 timezone: "Europe/Berlin".into(),
                 keyboard_layout: "ch".into(),
-                keyboard_variant: Some("de".into()),
+                keyboard_variant: Some("fr".into()),
             },
         }
     }
 
     fn fields(a: &Answers) -> Vec<Field> {
-        validate(a).into_iter().map(|e| e.field).collect()
+        validate(a, &test_catalog())
+            .into_iter()
+            .map(|e| e.field)
+            .collect()
     }
 
     #[test]
     fn good_answers_pass() {
-        assert!(validate(&good()).is_empty());
+        assert!(validate(&good(), &test_catalog()).is_empty());
     }
 
     #[test]
@@ -302,7 +251,7 @@ mod tests {
         a.disk.encryption_password = Some("short".into());
         assert_eq!(fields(&a), [Field::EncryptionPassword]);
         a.disk.encryption_password = Some("long-enough-pass".into());
-        assert!(validate(&a).is_empty());
+        assert!(validate(&a, &test_catalog()).is_empty());
         a.disk.encrypt = false;
         assert_eq!(fields(&a), [Field::EncryptionPassword]);
     }
@@ -311,7 +260,7 @@ mod tests {
     fn swap_size_limit() {
         let mut a = good();
         a.disk.swap_size_mib = 0;
-        assert!(validate(&a).is_empty());
+        assert!(validate(&a, &test_catalog()).is_empty());
         a.disk.swap_size_mib = u32::MAX;
         assert_eq!(fields(&a), [Field::SwapSize]);
     }
@@ -320,8 +269,8 @@ mod tests {
     fn keyboard_variant() {
         let mut a = good();
         a.system.keyboard_variant = None;
-        assert!(validate(&a).is_empty());
-        for v in ["", "De", "a b"] {
+        assert!(validate(&a, &test_catalog()).is_empty());
+        for v in ["", "de", "intl"] {
             a.system.keyboard_variant = Some(v.into());
             assert_eq!(fields(&a), [Field::KeyboardVariant], "{v}");
         }
@@ -336,12 +285,12 @@ mod tests {
         }
         let mut a = good();
         a.system.hostname = "box.example.org".into();
-        assert!(validate(&a).is_empty());
+        assert!(validate(&a, &test_catalog()).is_empty());
     }
 
     #[test]
     fn locales() {
-        for l in ["", "en", "EN_us", "en_US utf8"] {
+        for l in ["", "en_US", "en_US.UTF-8/UTF-8", "xx_XX.UTF-8"] {
             let mut a = good();
             a.system.locale = l.into();
             assert_eq!(fields(&a), [Field::Locale], "{l}");
@@ -350,14 +299,22 @@ mod tests {
 
     #[test]
     fn timezones() {
-        for t in ["", "Berlin", "Europe//Berlin", "../etc"] {
+        for t in ["", "Berlin", "Europe/Atlantis", "../etc"] {
             let mut a = good();
             a.system.timezone = t.into();
             assert_eq!(fields(&a), [Field::Timezone], "{t}");
         }
         let mut a = good();
         a.system.timezone = "UTC".into();
-        assert!(validate(&a).is_empty());
+        assert!(validate(&a, &test_catalog()).is_empty());
+    }
+
+    #[test]
+    fn keyboard_layout_must_exist() {
+        let mut a = good();
+        a.system.keyboard_layout = "xx".into();
+        a.system.keyboard_variant = None;
+        assert_eq!(fields(&a), [Field::KeyboardLayout]);
     }
 
     #[test]

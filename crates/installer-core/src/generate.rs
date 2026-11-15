@@ -1,4 +1,4 @@
-use crate::answers::{Answers, Filesystem};
+use crate::answers::Answers;
 use minijinja::{context, Environment, Value};
 
 /// Default nixpkgs ref written into the generated flake.
@@ -75,9 +75,7 @@ pub fn render(a: &Answers, host: &Host) -> Result<GeneratedFiles, RenderError> {
         keyboard_layout => &a.system.keyboard_layout,
         keyboard_variant => &a.system.keyboard_variant,
         user_name => &a.user.name,
-        password_hash => &a.user.password_hash,
         device => &a.disk.device,
-        btrfs => a.disk.filesystem == Filesystem::Btrfs,
         encrypt => a.disk.encrypt,
         swap_size_mib => a.disk.swap_size_mib,
     };
@@ -102,7 +100,6 @@ mod tests {
             schema_version: SCHEMA_VERSION,
             disk: Disk {
                 device: "/dev/nvme0n1".into(),
-                filesystem: Filesystem::Ext4,
                 swap_size_mib: 0,
                 encrypt: false,
                 encryption_password: None,
@@ -116,7 +113,7 @@ mod tests {
                 locale: "en_US.UTF-8".into(),
                 timezone: "Europe/Berlin".into(),
                 keyboard_layout: "ch".into(),
-                keyboard_variant: Some("de".into()),
+                keyboard_variant: Some("fr".into()),
             },
         }
     }
@@ -142,15 +139,14 @@ mod tests {
     }
 
     #[test]
-    fn uefi_ext4_plain() {
+    fn uefi_plain() {
         let out = render(&answers(), &host(Boot::Uefi)).unwrap();
         insta::assert_snapshot!(all(&out));
     }
 
     #[test]
-    fn bios_btrfs_encrypted_swap() {
+    fn bios_encrypted_swap() {
         let mut a = answers();
-        a.disk.filesystem = Filesystem::Btrfs;
         a.disk.encrypt = true;
         a.disk.encryption_password = Some("long-enough-pass".into());
         a.disk.swap_size_mib = 4096;
