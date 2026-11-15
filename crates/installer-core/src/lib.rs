@@ -26,10 +26,7 @@ pub use generate::{
 };
 pub use keymap::{apply_console_keymap, KeymapError, KeymapTools};
 pub use lock::{target_lock, LockError};
-pub use network::{
-    check_online, nmcli_available, nmcli_from_env, wifi_connect, wifi_scan, NetError, Reachability,
-    WifiNetwork,
-};
+pub use network::{check_online, Reachability};
 pub use password::{hash_password, HashError};
 pub use plan::{build_plan, Action, ActionKind, Command, Content, Plan, PlanError};
 pub use safety::{check_disk, SafetyError};
