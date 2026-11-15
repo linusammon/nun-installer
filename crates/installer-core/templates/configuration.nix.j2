@@ -2,7 +2,6 @@
 { ... }:
 {
   networking.hostName = {{ hostname | nix }};
-  networking.networkmanager.enable = true;
 
 {% if uefi %}
   boot.loader.systemd-boot.enable = true;
@@ -33,7 +32,12 @@
   };
 
   # The nun stack.
-  programs.noctalia.enable = true;
+  programs.noctalia = {
+    enable = true;
+    systemd.enable = true;
+    # NetworkManager, bluetooth, UPower and power-profiles-daemon.
+    recommendedServices.enable = true;
+  };
   programs.umbriel.enable = true;
   services.displayManager.noctalia-greeter.enable = true;
 

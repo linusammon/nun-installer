@@ -35,7 +35,6 @@ expression: all(&out)
 { ... }:
 {
   networking.hostName = "nun-box";
-  networking.networkmanager.enable = true;
 
   boot.loader.grub.enable = true;
 
@@ -58,7 +57,12 @@ expression: all(&out)
   };
 
   # The nun stack.
-  programs.noctalia.enable = true;
+  programs.noctalia = {
+    enable = true;
+    systemd.enable = true;
+    # NetworkManager, bluetooth, UPower and power-profiles-daemon.
+    recommendedServices.enable = true;
+  };
   programs.umbriel.enable = true;
   services.displayManager.noctalia-greeter.enable = true;
 
