@@ -153,25 +153,29 @@ fn check_password_hash(h: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// RFC 1123 hostname: labels of 1-63 alphanumerics/hyphens, no leading/trailing hyphen.
+/// The same rule NixOS applies to `networking.hostName`: a single DNS label (no
+/// domain part), 1-63 characters, alphanumeric at both ends, with `-` and `_`
+/// allowed in between. Anything else passes here and then fails when the
+/// configuration is evaluated, after the disk has been wiped.
 fn check_hostname(h: &str) -> Result<(), String> {
-    if h.is_empty() || h.len() > 253 {
-        return Err("must be 1-253 characters".into());
+    if h.is_empty() || h.len() > 63 {
+        return Err("must be 1-63 characters".into());
     }
-    for label in h.split('.') {
-        if label.is_empty() || label.len() > 63 {
-            return Err("each label must be 1-63 characters".into());
-        }
-        if label.starts_with('-') || label.ends_with('-') {
-            return Err("labels must not start or end with '-'".into());
-        }
-        if !label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-            return Err("may only contain a-z, A-Z, 0-9 and '-'".into());
-        }
+    if h.contains('.') {
+        return Err("must be a single name without dots".into());
+    }
+    let edge_ok = |c: Option<char>| c.is_some_and(|c| c.is_ascii_alphanumeric());
+    if !edge_ok(h.chars().next()) || !edge_ok(h.chars().next_back()) {
+        return Err("must start and end with a letter or digit".into());
+    }
+    if !h
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("may only contain letters, digits, '-' and '_'".into());
     }
     Ok(())
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,15 +285,39 @@ mod tests {
     }
 
     #[test]
-    fn hostnames() {
-        for h in ["", "-a", "a-", "a_b", "a..b", &"a".repeat(64)] {
+    fn hostnames_must_be_a_single_nixos_acceptable_label() {
+        for h in [
+            "",
+            "-a",
+            "a-",
+            "_a",
+            "a_",
+            "a.b",
+            "box.example.org",
+            "a b",
+            "a\u{e9}b",
+            &"a".repeat(64),
+        ] {
             let mut a = good();
             a.system.hostname = h.into();
-            assert_eq!(fields(&a), [Field::Hostname], "{h}");
+            assert_eq!(fields(&a), [Field::Hostname], "{h:?} should be rejected");
         }
-        let mut a = good();
-        a.system.hostname = "box.example.org".into();
-        assert!(validate(&a, &test_catalog()).is_empty());
+        for h in [
+            "a",
+            "nun",
+            "nun-box",
+            "Nun-Box1",
+            "a_b",
+            "a-_-b",
+            &"a".repeat(63),
+        ] {
+            let mut a = good();
+            a.system.hostname = h.into();
+            assert!(
+                validate(&a, &test_catalog()).is_empty(),
+                "{h:?} should be accepted"
+            );
+        }
     }
 
     #[test]
