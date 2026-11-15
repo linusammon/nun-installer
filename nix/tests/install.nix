@@ -38,6 +38,8 @@ let
   };
   answersFile = pkgs.writeText "answers.json" (builtins.toJSON answers);
 
+  instrumentation = "${nixpkgsSrc}/nixos/modules/testing/test-instrumentation.nix";
+
   env = lib.concatStringsSep " " [
     "NUN_NIXPKGS_URL=path:${nixpkgsSrc}"
     "NUN_DISKO_URL=path:${diskoSrc}"
@@ -167,6 +169,9 @@ pkgs.testers.runNixOSTest {
 
   passthru = { inherit target; };
 
+  # A hung boot should fail, not run for hours.
+  globalTimeout = 1200;
+
   nodes.installer =
     { ... }:
     {
@@ -200,6 +205,7 @@ pkgs.testers.runNixOSTest {
       environment.systemPackages = [
         installer
         disko.packages.${system}.disko
+        pkgs.cryptsetup
       ];
 
       # No network: everything nixos-install and disko build must already be here.
@@ -248,7 +254,27 @@ pkgs.testers.runNixOSTest {
         ]);
     };
 
+  nodes.target = {
+    virtualisation = {
+      cores = 4;
+      memorySize = 4096;
+      diskSize = 24 * 1024;
+      # Boot the disk the installer just wrote.
+      diskImage = "./target.qcow2";
+      useBootLoader = true;
+      useEFIBoot = true;
+      useDefaultFilesystems = false;
+      efi.keepVariables = false;
+      fileSystems."/" = {
+        device = "/dev/disk/by-label/this-is-not-real-and-will-never-be-used";
+        fsType = "ext4";
+      };
+    };
+  };
+
   testScript = ''
+    encrypted = ${if encrypt then "True" else "False"}
+
     installer.start()
     installer.wait_for_unit("multi-user.target")
 
@@ -282,5 +308,42 @@ pkgs.testers.runNixOSTest {
     with subtest("bootloader is installed"):
         installer.succeed("test -e /mnt/boot/EFI/BOOT/BOOTX64.EFI")
         installer.succeed("test -L /mnt/nix/var/nix/profiles/system")
+
+    if encrypted:
+        with subtest("disk is really encrypted"):
+            installer.succeed("lsblk -f /dev/vda | grep -q crypto_LUKS")
+            installer.fail("grep -rq '${encryptionPassword}' /mnt/etc/nixos")
+
+    # The installed system has no way to talk to the test driver, so add the
+    # instrumentation module to the generated flake and install once more.
+    with subtest("add test instrumentation"):
+        installer.succeed(
+            r"""sed -i '/^ *\.\/configuration\.nix$/a\          "${instrumentation}"' /mnt/etc/nixos/flake.nix"""
+        )
+        installer.succeed("grep -q test-instrumentation /mnt/etc/nixos/flake.nix")
+        installer.succeed("nixos-install --root /mnt --no-root-passwd --flake /mnt/etc/nixos#nun-test >&2")
+
+    installer.succeed("sync; umount -R /mnt")
+    if encrypted:
+        installer.succeed("cryptsetup close cryptroot")
+    installer.shutdown()
+
+    with subtest("installed system boots"):
+        # Same disk image as the installer wrote to.
+        target.state_dir = installer.state_dir
+        target.start()
+        if encrypted:
+            target.wait_for_console_text("passphrase for")
+            target.send_console("${encryptionPassword}\n")
+        target.wait_for_unit("multi-user.target", timeout=300)
+
+    with subtest("installed system is what we asked for"):
+        target.succeed("hostname | grep -qx nun-test")
+        target.succeed("id -nG alice | grep -qw wheel")
+        target.succeed("grep -q 'nunsalt1.Hb.bACmNA' /etc/shadow")
+        target.succeed("findmnt -no FSTYPE / | grep -qx btrfs")
+        target.succeed("swapon --show=NAME --noheadings | grep -q swap")
+        target.succeed("timedatectl show -p Timezone --value | grep -qx Europe/Berlin")
+        target.succeed("systemctl --failed >&2")
   '';
 }

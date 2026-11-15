@@ -124,6 +124,14 @@
             nixpkgsSrc = nixpkgs.outPath;
             nixpkgsNarHash = nixpkgs.narHash;
           };
+          vm-install-encrypted = import ./nix/tests/install.nix {
+            inherit pkgs;
+            inherit (self.packages.${system}) installer;
+            inherit disko;
+            nixpkgsSrc = nixpkgs.outPath;
+            nixpkgsNarHash = nixpkgs.narHash;
+            encrypt = true;
+          };
         }
       );
 
