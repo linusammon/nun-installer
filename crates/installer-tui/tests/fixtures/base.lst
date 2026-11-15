@@ -1,0 +1,7 @@
+! layout
+  us              English (US)
+  ch              German (Switzerland)
+
+! variant
+  intl            us: English (US, intl., with dead keys)
+  fr              ch: French (Switzerland)

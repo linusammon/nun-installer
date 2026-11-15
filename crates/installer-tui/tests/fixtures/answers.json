@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "disk": {
+    "device": "/dev/vda",
+    "swap_size_mib": 2048,
+    "encrypt": true,
+    "encryption_password": "correct horse battery"
+  },
+  "user": {
+    "name": "alice",
+    "password_hash": "$y$j9T$abc$def"
+  },
+  "system": {
+    "hostname": "nun",
+    "locale": "en_US.UTF-8",
+    "timezone": "Europe/Berlin",
+    "keyboard_layout": "ch",
+    "keyboard_variant": "fr"
+  }
+}
