@@ -47,7 +47,7 @@ impl TextInput {
     /// What to draw: the text, or one dot per character for secrets.
     pub fn display(&self) -> String {
         if self.masked {
-            "•".repeat(self.value.chars().count())
+            "*".repeat(self.value.chars().count())
         } else {
             self.value.to_string()
         }
@@ -60,18 +60,25 @@ pub struct Item {
     pub value: String,
     /// What the user sees and filters on.
     pub label: String,
+    /// Shown dimmed next to the label and also searched, for example a code.
+    pub detail: String,
 }
 
 impl Item {
     pub fn new(value: &str, label: &str) -> Self {
+        Self::with_detail(value, label, "")
+    }
+
+    pub fn with_detail(value: &str, label: &str, detail: &str) -> Self {
         Self {
             value: value.into(),
             label: label.into(),
+            detail: detail.into(),
         }
     }
 }
 
-/// A list narrowed by typing. Matching is case-insensitive on the label.
+/// A list narrowed by typing. Matching is case-insensitive on label and detail.
 #[derive(Debug, Default)]
 pub struct FilterList {
     items: Vec<Item>,
@@ -100,7 +107,10 @@ impl FilterList {
         let needle = self.filter.to_lowercase();
         self.items
             .iter()
-            .filter(|i| i.label.to_lowercase().contains(&needle))
+            .filter(|i| {
+                i.label.to_lowercase().contains(&needle)
+                    || i.detail.to_lowercase().contains(&needle)
+            })
             .collect()
     }
 
@@ -177,6 +187,23 @@ mod tests {
     }
 
     #[test]
+    fn detail_is_searchable_too() {
+        let mut l = FilterList::new(vec![
+            Item::with_detail("ch", "German (Switzerland)", "ch"),
+            Item::with_detail("us", "English (US)", "us"),
+        ]);
+        l.push_filter('u');
+        l.push_filter('s');
+        let v: Vec<_> = l.visible().iter().map(|i| i.value.as_str()).collect();
+        assert_eq!(v, ["us"]);
+        l.clear_filter();
+        for c in "ch".chars() {
+            l.push_filter(c);
+        }
+        assert_eq!(l.visible().len(), 1);
+    }
+
+    #[test]
     fn selection_moves_and_clamps() {
         let mut l = list();
         l.up();
@@ -215,7 +242,7 @@ mod tests {
         let mut t = TextInput::masked();
         t.push('a');
         t.push('é');
-        assert_eq!(t.display(), "••");
+        assert_eq!(t.display(), "**");
         assert_eq!(t.value(), "aé");
         t.pop();
         assert_eq!(t.value(), "a");

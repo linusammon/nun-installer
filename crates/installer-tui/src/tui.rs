@@ -1,11 +1,11 @@
 //! Terminal setup and the event loop.
 
-use crate::app::{App, Effect};
-use crate::{install, ui};
+use crate::app::{App, AppEvent, Effect};
+use crate::{ui, workers};
 use crossterm::event::{self, Event, KeyEventKind};
 use installer_core::{list_disks, Catalog, Host};
 use std::io;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{self, Sender};
 use std::time::Duration;
 
 /// The timezone the live system is already set to, if it is a real one.
@@ -15,9 +15,14 @@ fn current_timezone() -> Option<String> {
     target.split_once("zoneinfo/").map(|(_, tz)| tz.to_owned())
 }
 
+/// `NUN_OFFLINE=1` marks media that carries everything the install needs.
+fn offline() -> bool {
+    std::env::var("NUN_OFFLINE").is_ok_and(|v| v == "1")
+}
+
 /// Run the interactive installer. Returns when the user quits or reboots.
 pub fn run(catalog: Catalog, host: Host) -> io::Result<()> {
-    let mut app = App::new(catalog, host, list_disks);
+    let mut app = App::new(catalog, host, offline(), list_disks);
     if let Some(tz) = current_timezone() {
         app.set_default_timezone(&tz);
     }
@@ -35,15 +40,32 @@ pub fn run(catalog: Catalog, host: Host) -> io::Result<()> {
     Ok(())
 }
 
+/// Run effects; returns `Some(reboot)` when the loop should end.
+fn run_effects(effects: Vec<Effect>, tx: &Sender<AppEvent>) -> Option<bool> {
+    for effect in effects {
+        match effect {
+            Effect::Quit => return Some(false),
+            Effect::Reboot => return Some(true),
+            other => workers::spawn(other, tx.clone()),
+        }
+    }
+    None
+}
+
 /// Returns whether to reboot.
 fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Result<bool> {
-    let mut installing: Option<Receiver<_>> = None;
+    let (tx, rx) = mpsc::channel();
+    let start = app.start();
+    run_effects(start, &tx);
+
     loop {
         terminal.draw(|f| ui::render(f, app))?;
 
-        if let Some(rx) = &installing {
-            while let Ok(ev) = rx.try_recv() {
-                app.on_install_event(ev);
+        while let Ok(ev) = rx.try_recv() {
+            match ev {
+                AppEvent::Install(e) => app.on_install_event(e),
+                AppEvent::Keymap(r) => app.on_keymap_result(r),
+                AppEvent::Checks(r) => app.on_checks(r),
             }
         }
 
@@ -54,11 +76,8 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Res
             if key.kind != KeyEventKind::Press {
                 continue;
             }
-            match app.handle_key(key) {
-                Effect::None => {}
-                Effect::Quit => return Ok(false),
-                Effect::Reboot => return Ok(true),
-                Effect::Install(plan) => installing = Some(install::spawn(plan)),
+            if let Some(reboot) = run_effects(app.handle_key(key), &tx) {
+                return Ok(reboot);
             }
         }
     }

@@ -1,16 +1,24 @@
 //! Drawing. Reads the app state and never changes it.
+//!
+//! The look follows the old noctalia installer: a step bar on top, key hints
+//! at the bottom right, borderless pages, and bordered widgets that turn
+//! yellow when focused and show their own error in the bottom border.
 
-use crate::app::{App, OptionsField, Screen, StepStatus, UserField};
+use crate::app::{App, OptionsField, Pane, Screen, StepStatus, Target, UserField, BAR};
 use crate::widgets::{FilterList, TextInput};
 use installer_core::{human_size, Boot};
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
-const ACCENT: Color = Color::Cyan;
+const ACCENT: Color = Color::Yellow;
 const DIM: Style = Style::new().fg(Color::DarkGray);
+const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
+const OK: Style = Style::new().fg(Color::Green);
+const WARN: Style = Style::new().fg(Color::Yellow);
+const FAIL: Style = Style::new().fg(Color::Red);
 const DANGER: Style = Style::new().fg(Color::Red).add_modifier(Modifier::BOLD);
 
 pub fn render(frame: &mut Frame, app: &App) {
@@ -21,17 +29,26 @@ pub fn render(frame: &mut Frame, app: &App) {
     ])
     .areas(frame.area());
 
-    render_header(frame, header, app);
+    step_bar(frame, middle_row(header), app);
     match app.screen {
         Screen::Welcome => welcome(frame, body, app),
-        Screen::Timezone => list_page(frame, body, "Choose your timezone", &app.timezone),
-        Screen::Locale => list_page(frame, body, "Choose your language", &app.locale),
-        Screen::KeyboardLayout => {
-            list_page(frame, body, "Choose your keyboard layout", &app.layout)
-        }
-        Screen::KeyboardVariant => {
-            list_page(frame, body, "Choose a keyboard variant", &app.variant)
-        }
+        Screen::Timezone => pick_list(
+            frame,
+            body,
+            "Timezone",
+            &app.timezone,
+            true,
+            app.error_for(Target::Screen),
+        ),
+        Screen::Locale => pick_list(
+            frame,
+            body,
+            "Language",
+            &app.locale,
+            true,
+            app.error_for(Target::Screen),
+        ),
+        Screen::Keyboard => keyboard(frame, body, app),
         Screen::Disk => disk_page(frame, body, app),
         Screen::DiskOptions => options_page(frame, body, app),
         Screen::User => user_page(frame, body, app),
@@ -39,89 +56,165 @@ pub fn render(frame: &mut Frame, app: &App) {
         Screen::Summary => summary_page(frame, body, app),
         Screen::Installing | Screen::Done => install_page(frame, body, app),
     }
-    render_footer(frame, footer, app);
+    footer_bar(frame, middle_row(footer), app);
 }
 
-fn render_header(frame: &mut Frame, area: Rect, app: &App) {
-    let step = app
-        .progress()
-        .map(|(i, n)| format!("  step {i} of {n}"))
-        .unwrap_or_default();
-    let line = Line::from(vec![
-        Span::styled(
-            "nun installer",
-            Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  "),
-        Span::styled(
-            app.screen.title(),
-            Style::new().add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(step, DIM),
-    ]);
-    frame.render_widget(
-        Paragraph::new(line).block(Block::default().borders(Borders::ALL)),
-        area,
-    );
-}
-
-fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
-    let lines: Vec<Line> = if app.errors.is_empty() {
-        vec![Line::styled(hint(app.screen), DIM)]
-    } else {
-        app.errors
-            .iter()
-            .map(|e| Line::styled(format!("! {e}"), Style::new().fg(Color::Red)))
-            .collect()
-    };
-    frame.render_widget(
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: true })
-            .block(Block::default().borders(Borders::ALL)),
-        area,
-    );
-}
-
-fn hint(screen: Screen) -> &'static str {
-    match screen {
-        Screen::Welcome => "Enter: begin   q: quit",
-        Screen::Timezone | Screen::Locale | Screen::KeyboardLayout | Screen::KeyboardVariant => {
-            "type to filter   Up/Down: move   Enter: next   Esc: back"
-        }
-        Screen::Disk => "Up/Down: move   Enter: next   r: rescan   Esc: back",
-        Screen::DiskOptions => "Tab: next field   Space: toggle   Enter: next   Esc: back",
-        Screen::User => "Tab: next field   Enter: next   Esc: back",
-        Screen::Hostname => "Enter: next   Esc: back",
-        Screen::Summary => "type the disk name, then Enter to install   Esc: back",
-        Screen::Installing => "installing, please wait",
-        Screen::Done => "Enter: continue",
+/// The bars are three rows tall with the text on the middle one, which leaves
+/// breathing room above and below.
+fn middle_row(area: Rect) -> Rect {
+    Rect {
+        y: area.y + area.height / 2,
+        height: 1,
+        ..area
     }
 }
 
-fn block(title: &str) -> Block<'_> {
-    Block::default().borders(Borders::ALL).title(title)
+fn step_bar(frame: &mut Frame, area: Rect, app: &App) {
+    let current = app.screen.bar_index();
+    let width: usize = BAR.iter().map(|(l, _)| l.chars().count() + 3).sum();
+    let line = if width <= area.width as usize {
+        let mut spans = Vec::new();
+        for (i, (label, _)) in BAR.iter().enumerate() {
+            let style = if i == current {
+                Style::new().fg(Color::Black).bg(ACCENT)
+            } else {
+                Style::new()
+            };
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(format!(" {label} "), style));
+        }
+        Line::from(spans)
+    } else {
+        // Too narrow for every step: show only where we are.
+        Line::from(vec![
+            Span::styled(
+                format!(" {} ", BAR[current].0),
+                Style::new().fg(Color::Black).bg(ACCENT),
+            ),
+            Span::styled(format!("  step {} of {}", current + 1, BAR.len()), DIM),
+        ])
+    };
+    frame.render_widget(Paragraph::new(line).alignment(Alignment::Center), area);
 }
 
-fn welcome(frame: &mut Frame, area: Rect, app: &App) {
-    let boot = match app.host.boot {
-        Boot::Uefi => "UEFI",
-        Boot::Bios => "BIOS",
+fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    match app.screen {
+        Screen::Welcome if app.can_continue() => {
+            vec![("Enter", "continue"), ("r", "check again"), ("q", "quit")]
+        }
+        Screen::Welcome => vec![("r", "check again"), ("q", "quit")],
+        Screen::Timezone | Screen::Locale => vec![
+            ("Type", "filter"),
+            ("Up/Down", "select"),
+            ("Esc", "prev"),
+            ("Enter", "confirm"),
+        ],
+        Screen::Keyboard => vec![
+            ("Type", "filter"),
+            ("Up/Down", "select"),
+            ("Tab", "switch list"),
+            ("Esc", "prev"),
+            ("Enter", "confirm"),
+        ],
+        Screen::Disk => vec![
+            ("Up/Down", "select"),
+            ("r", "rescan"),
+            ("Esc", "prev"),
+            ("Enter", "confirm"),
+        ],
+        Screen::DiskOptions => vec![
+            ("Tab", "next"),
+            ("Space", "toggle"),
+            ("Esc", "prev"),
+            ("Enter", "confirm"),
+        ],
+        Screen::User => vec![("Tab", "next"), ("Esc", "prev"), ("Enter", "confirm")],
+        Screen::Hostname => vec![("Esc", "prev"), ("Enter", "confirm")],
+        Screen::Summary => vec![("Esc", "prev"), ("Enter", "install")],
+        Screen::Installing => vec![],
+        Screen::Done if app.install.result == Some(Ok(())) => vec![("Enter", "reboot")],
+        Screen::Done => vec![("Enter", "quit")],
+    }
+}
+
+fn footer_bar(frame: &mut Frame, area: Rect, app: &App) {
+    let hints = hints(app);
+    let mut spans = Vec::new();
+    let mut width = 0;
+    for (key, action) in &hints {
+        spans.push(Span::styled(
+            format!(" {key}"),
+            Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::raw(format!(" {action} ")));
+        width += key.chars().count() + action.chars().count() + 3;
+    }
+    let [left, right] =
+        Layout::horizontal([Constraint::Fill(1), Constraint::Length(width as u16)]).areas(area);
+    if let Some(notice) = &app.notice {
+        frame.render_widget(
+            Paragraph::new(Span::styled(format!(" {notice}"), DIM)),
+            left,
+        );
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), right);
+}
+
+// ---- building blocks ----
+
+fn field_block(title: &str, focused: bool, error: Option<&str>) -> Block<'static> {
+    let border = if error.is_some() {
+        FAIL
+    } else if focused {
+        Style::new().fg(ACCENT)
+    } else {
+        DIM
     };
-    let lines = vec![
-        Line::from("This installs NixOS with the nun stack:"),
-        Line::from("  noctalia, noctalia-greeter and umbriel."),
-        Line::from(""),
-        Line::from(format!("Detected: {boot} boot, {}", app.host.system)),
-        Line::from(""),
-        Line::styled(
-            "The disk you choose will be erased completely.",
-            Style::new().fg(Color::Yellow),
-        ),
-        Line::from(""),
-        Line::from("Pick your timezone, language and keyboard first, so the"),
-        Line::from("rest of the questions use the right layout."),
-    ];
-    frame.render_widget(Paragraph::new(lines).block(block("Welcome")), area);
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border)
+        .title(Line::from(format!(" {title} ")));
+    if let Some(e) = error {
+        block = block.title_bottom(Line::styled(format!(" {e} "), FAIL));
+    }
+    block
+}
+
+/// The text with a block cursor at the end while focused.
+fn input_line(input: &TextInput, focused: bool) -> Line<'static> {
+    let mut spans = vec![Span::raw(input.display())];
+    if focused {
+        spans.push(Span::styled(" ", Style::new().bg(ACCENT)));
+    }
+    Line::from(spans)
+}
+
+fn input_field(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    input: &TextInput,
+    focused: bool,
+    error: Option<&str>,
+) {
+    frame.render_widget(
+        Paragraph::new(input_line(input, focused)).block(field_block(title, focused, error)),
+        area,
+    );
+}
+
+fn checkbox(label: &str, checked: bool, focused: bool) -> Line<'static> {
+    let bracket = if checked { "[x]" } else { "[ ]" };
+    let (bracket_style, label_style) = if focused {
+        (Style::new().fg(ACCENT), BOLD)
+    } else {
+        (Style::new(), Style::new())
+    };
+    Line::from(vec![
+        Span::styled(bracket, bracket_style),
+        Span::raw(" "),
+        Span::styled(label.to_owned(), label_style),
+    ])
 }
 
 /// Keep the selection roughly centred as the list scrolls.
@@ -135,31 +228,155 @@ fn list_state(selected: usize, len: usize, height: u16) -> ListState {
         .with_selected(Some(selected))
 }
 
-fn list_page(frame: &mut Frame, area: Rect, prompt: &str, list: &FilterList) {
-    let [filter, rest] = Layout::vertical([Constraint::Length(3), Constraint::Min(3)]).areas(area);
-    frame.render_widget(
-        Paragraph::new(format!("{}_", list.filter()))
-            .block(block(&format!("{prompt}, type to filter"))),
-        filter,
-    );
+fn pick_list(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    list: &FilterList,
+    focused: bool,
+    error: Option<&str>,
+) {
     let visible = list.visible();
+    let count = if list.filter().is_empty() {
+        let n = list.total();
+        format!("{n} item{}", if n == 1 { "" } else { "s" })
+    } else {
+        let n = visible.len();
+        format!(
+            "{n} match{} for \"{}\"",
+            if n == 1 { "" } else { "es" },
+            list.filter()
+        )
+    };
     let items: Vec<ListItem> = visible
         .iter()
-        .map(|i| ListItem::new(i.label.as_str()))
+        .map(|i| {
+            let mut spans = vec![Span::raw(i.label.clone())];
+            if !i.detail.is_empty() {
+                spans.push(Span::styled(format!("  {}", i.detail), DIM));
+            }
+            ListItem::new(Line::from(spans))
+        })
         .collect();
-    let title = format!("{} of {}", visible.len(), list.total());
     let widget = List::new(items)
-        .block(block(&title))
-        .highlight_style(Style::new().fg(Color::Black).bg(ACCENT))
-        .highlight_symbol("> ");
-    let mut state = list_state(list.selected_index(), visible.len(), rest.height);
-    frame.render_stateful_widget(widget, rest, &mut state);
+        .block(field_block(&format!("{title} — {count}"), focused, error))
+        .highlight_symbol("> ")
+        .highlight_style(BOLD);
+    let mut state = list_state(list.selected_index(), visible.len(), area.height);
+    frame.render_stateful_widget(widget, area, &mut state);
+}
+
+// ---- screens ----
+
+fn check(ok: bool, good: &str, bad: &str) -> Line<'static> {
+    if ok {
+        Line::styled(format!("[ok] {good}"), OK)
+    } else {
+        Line::styled(format!("[FAIL] {bad}"), FAIL)
+    }
+}
+
+fn welcome(frame: &mut Frame, area: Rect, app: &App) {
+    let boot = match app.host.boot {
+        Boot::Uefi => "UEFI",
+        Boot::Bios => "BIOS",
+    };
+    let mut lines = vec![
+        Line::raw("Welcome to the nun installer."),
+        Line::raw(""),
+        Line::raw(
+            "This installs NixOS with the nun stack: noctalia, noctalia-greeter and umbriel.",
+        ),
+        Line::styled(format!("Detected: {boot} boot, {}", app.host.system), DIM),
+        Line::raw(""),
+    ];
+
+    match (&app.checks.result, app.checks.running) {
+        (_, true) | (None, _) => lines.push(Line::raw("Checking prerequisites...")),
+        (Some(result), false) => {
+            if app.offline {
+                lines.push(Line::styled(
+                    "[--] Offline install: everything needed is on this medium",
+                    DIM,
+                ));
+            } else if result.internet.online() {
+                lines.push(check(true, "Internet access", ""));
+            } else {
+                lines.push(check(false, "", "No internet access"));
+                let mut down = Vec::new();
+                if !result.internet.github {
+                    down.push("github.com");
+                }
+                if !result.internet.cache {
+                    down.push("cache.nixos.org");
+                }
+                lines.push(Line::styled(
+                    format!("       Cannot reach {}.", down.join(" and ")),
+                    DIM,
+                ));
+                lines.push(Line::styled(
+                    "       Connect with a cable, or run `nmtui` in another terminal, then press r.",
+                    DIM,
+                ));
+            }
+            if let Some(note) = &result.clock_note {
+                lines.push(Line::styled(format!("[warn] {note}"), WARN));
+            }
+            lines.push(check(
+                app.has_usable_disk(),
+                "A usable disk was found",
+                "No disk to install onto was found",
+            ));
+            if result.on_ac == Some(false) {
+                lines.push(Line::styled(
+                    "[warn] Not on AC power. Losing power mid-install can leave the disk broken.",
+                    WARN,
+                ));
+            }
+            lines.push(Line::raw(""));
+            if app.can_continue() {
+                lines.push(Line::raw("Press Enter to continue."));
+            } else {
+                lines.push(Line::styled(
+                    "Cannot continue until the above is resolved. Press r to check again.",
+                    FAIL,
+                ));
+            }
+        }
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn keyboard(frame: &mut Frame, area: Rect, app: &App) {
+    let [left, right] =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(area);
+    pick_list(
+        frame,
+        left,
+        "Layout",
+        &app.layout,
+        app.pane == Pane::Layout,
+        app.error_for(Target::Screen),
+    );
+    pick_list(
+        frame,
+        right,
+        &format!("Variant of \"{}\"", app.layout_description()),
+        &app.variant,
+        app.pane == Pane::Variant,
+        None,
+    );
 }
 
 fn disk_page(frame: &mut Frame, area: Rect, app: &App) {
+    let error = app.error_for(Target::Disk);
     if app.disks.is_empty() {
         frame.render_widget(
-            Paragraph::new("No disks found. Press r to scan again.").block(block("Disks")),
+            Paragraph::new("No disks found. Press r to scan again.").block(field_block(
+                "Disk — choose the disk to erase",
+                true,
+                error,
+            )),
             area,
         );
         return;
@@ -168,119 +385,155 @@ fn disk_page(frame: &mut Frame, area: Rect, app: &App) {
         .disks
         .iter()
         .map(|d| {
-            let mut lines = vec![Line::raw(App::disk_label(d))];
-            if let Some(reason) = d.rejected.first() {
-                lines.push(Line::styled(format!("    unavailable: {reason}"), DIM));
-            }
-            let item = ListItem::new(lines);
-            if d.selectable() {
-                item
-            } else {
-                item.style(DIM)
-            }
+            let usable = d.selectable();
+            let title_style = if usable { BOLD } else { DIM };
+            let first = Line::from(vec![
+                Span::styled(d.path.display().to_string(), title_style),
+                Span::styled(format!("  {}", human_size(d.size_bytes)), title_style),
+            ]);
+            let second = match d.rejected.first() {
+                Some(reason) => Line::styled(format!("unavailable: {reason}"), DIM),
+                None => {
+                    let model = if d.model.is_empty() { "Disk" } else { &d.model };
+                    let removable = if d.removable { "  [removable]" } else { "" };
+                    Line::styled(format!("{model}{removable}"), DIM)
+                }
+            };
+            ListItem::new(vec![first, second])
         })
         .collect();
     let widget = List::new(items)
-        .block(block("Choose the disk to erase and install on"))
-        .highlight_style(Style::new().fg(Color::Black).bg(ACCENT))
+        .block(field_block("Disk — choose the disk to erase", true, error))
         .highlight_symbol("> ");
     let mut state = list_state(app.disk_selected, app.disks.len(), area.height);
     frame.render_stateful_widget(widget, area, &mut state);
 }
 
-fn field(label: &str, input: &TextInput, focused: bool) -> Line<'static> {
-    let cursor = if focused { "_" } else { "" };
-    let style = if focused {
-        Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)
-    } else {
-        Style::new()
-    };
-    Line::from(vec![
-        Span::styled(format!("{label:<22}"), style),
-        Span::raw(format!("{}{cursor}", input.display())),
-    ])
-}
-
-fn toggle(label: &str, on: bool, focused: bool) -> Line<'static> {
-    let style = if focused {
-        Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)
-    } else {
-        Style::new()
-    };
-    Line::from(vec![
-        Span::styled(format!("{label:<22}"), style),
-        Span::raw(if on { "[x] yes" } else { "[ ] no" }),
-    ])
-}
-
 fn options_page(frame: &mut Frame, area: Rect, app: &App) {
     let focus = app.options_focus;
-    let mut lines = vec![
-        field("Swap size (MiB)", &app.swap, focus == OptionsField::Swap),
-        Line::styled("  0 disables swap", DIM),
-        Line::from(""),
-        toggle(
-            "Encrypt the disk",
+    let mut rows = vec![Constraint::Length(3), Constraint::Length(1)];
+    if app.encrypt {
+        rows.push(Constraint::Length(3));
+    }
+    rows.push(Constraint::Min(0));
+    let areas = Layout::vertical(rows).split(area);
+
+    input_field(
+        frame,
+        areas[0],
+        "Swap size (MiB, 0 for none)",
+        &app.swap,
+        focus == OptionsField::Swap,
+        app.error_for(Target::Swap),
+    );
+    frame.render_widget(
+        Paragraph::new(checkbox(
+            "Encrypt system (LUKS)",
             app.encrypt,
             focus == OptionsField::Encrypt,
-        ),
-    ];
+        )),
+        areas[1],
+    );
     if app.encrypt {
-        lines.push(Line::from(""));
-        lines.push(field(
+        let [a, b] = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .areas(areas[2]);
+        input_field(
+            frame,
+            a,
             "Passphrase",
             &app.passphrase,
             focus == OptionsField::Passphrase,
-        ));
-        lines.push(field(
+            app.error_for(Target::Passphrase),
+        );
+        input_field(
+            frame,
+            b,
             "Repeat passphrase",
             &app.passphrase_confirm,
             focus == OptionsField::Confirm,
-        ));
-        lines.push(Line::styled(
-            "  You will type this passphrase every time the computer boots.",
-            DIM,
-        ));
+            app.error_for(Target::PassphraseConfirm),
+        );
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                "You will type this passphrase every time the computer boots.",
+                DIM,
+            )),
+            areas[3],
+        );
     }
-    frame.render_widget(Paragraph::new(lines).block(block("Disk options")), area);
 }
 
 fn user_page(frame: &mut Frame, area: Rect, app: &App) {
-    let lines = vec![
-        field("Username", &app.username, app.user_focus == UserField::Name),
-        field(
-            "Password",
-            &app.password,
-            app.user_focus == UserField::Password,
-        ),
-        field(
-            "Repeat password",
-            &app.password_confirm,
-            app.user_focus == UserField::Confirm,
-        ),
-        Line::from(""),
-        Line::styled(
+    let [name, pw, note, _] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Length(3),
+        Constraint::Length(2),
+        Constraint::Min(0),
+    ])
+    .areas(area);
+    input_field(
+        frame,
+        name,
+        "Username",
+        &app.username,
+        app.user_focus == UserField::Name,
+        app.error_for(Target::Username),
+    );
+    let [a, b] =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(pw);
+    input_field(
+        frame,
+        a,
+        "Password",
+        &app.password,
+        app.user_focus == UserField::Password,
+        app.error_for(Target::Password),
+    );
+    input_field(
+        frame,
+        b,
+        "Confirm password",
+        &app.password_confirm,
+        app.user_focus == UserField::Confirm,
+        app.error_for(Target::PasswordConfirm),
+    );
+    frame.render_widget(
+        Paragraph::new(Line::styled(
             "The account can use sudo. The root account stays locked.",
             DIM,
-        ),
-    ];
-    frame.render_widget(Paragraph::new(lines).block(block("User account")), area);
+        )),
+        note,
+    );
 }
 
 fn hostname_page(frame: &mut Frame, area: Rect, app: &App) {
-    let lines = vec![
-        field("Hostname", &app.hostname, true),
-        Line::from(""),
-        Line::styled("The name of this computer on the network.", DIM),
-    ];
-    frame.render_widget(Paragraph::new(lines).block(block("Hostname")), area);
+    let [field, note, _] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Length(2),
+        Constraint::Min(0),
+    ])
+    .areas(area);
+    input_field(
+        frame,
+        field,
+        "Hostname — the name of this computer",
+        &app.hostname,
+        true,
+        app.error_for(Target::Hostname),
+    );
+    frame.render_widget(
+        Paragraph::new(Line::styled(
+            "How this computer shows up on the network.",
+            DIM,
+        )),
+        note,
+    );
 }
 
 fn summary_page(frame: &mut Frame, area: Rect, app: &App) {
     let a = app.answers();
-    let disk = app.selected_disk();
     let row =
-        |k: &str, v: String| Line::from(vec![Span::styled(format!("{k:<14}"), DIM), Span::raw(v)]);
+        |k: &str, v: String| Line::from(vec![Span::styled(format!("{k:<12}"), DIM), Span::raw(v)]);
     let keyboard = match &a.system.keyboard_variant {
         Some(v) => format!("{} ({v})", a.system.keyboard_layout),
         None => a.system.keyboard_layout.clone(),
@@ -291,10 +544,10 @@ fn summary_page(frame: &mut Frame, area: Rect, app: &App) {
         human_size(u64::from(a.disk.swap_size_mib) * 1024 * 1024)
     };
     let lines = vec![
-        row("Timezone", a.system.timezone.clone()),
-        row("Language", a.system.locale.clone()),
-        row("Keyboard", keyboard),
-        row("Disk", disk.map(App::disk_label).unwrap_or_default()),
+        row(
+            "Disk",
+            app.selected_disk().map(App::disk_label).unwrap_or_default(),
+        ),
         row(
             "Encryption",
             if a.disk.encrypt {
@@ -304,25 +557,40 @@ fn summary_page(frame: &mut Frame, area: Rect, app: &App) {
             },
         ),
         row("Swap", swap),
-        row("User", a.user.name.clone()),
         row("Hostname", a.system.hostname.clone()),
-        Line::from(""),
+        row("Timezone", a.system.timezone.clone()),
+        row("Language", a.system.locale.clone()),
+        row("Keyboard", keyboard),
+        row("User", a.user.name.clone()),
+        Line::raw(""),
         Line::styled(
             format!("EVERYTHING ON {} WILL BE ERASED.", a.disk.device),
             DANGER,
         ),
-        Line::from(""),
-        field(
-            &format!("Type \"{}\" to confirm", app.confirm_word()),
-            &app.confirm,
-            true,
-        ),
+        Line::raw(format!(
+            "Type the disk name ({}) below to confirm.",
+            app.confirm_word()
+        )),
     ];
-    frame.render_widget(Paragraph::new(lines).block(block("Review")), area);
+    let [text, field, _] = Layout::vertical([
+        Constraint::Length(lines.len() as u16),
+        Constraint::Length(3),
+        Constraint::Min(0),
+    ])
+    .areas(area);
+    frame.render_widget(Paragraph::new(lines), text);
+    input_field(
+        frame,
+        field,
+        "Confirm disk",
+        &app.confirm,
+        true,
+        app.error_for(Target::Confirm),
+    );
 }
 
 fn install_page(frame: &mut Frame, area: Rect, app: &App) {
-    let steps_height = (app.install.steps.len() as u16 + 2).min(area.height / 2);
+    let steps_height = (app.install.steps.len() as u16).min(area.height / 2);
     let [steps, log] =
         Layout::vertical([Constraint::Length(steps_height), Constraint::Min(3)]).areas(area);
 
@@ -334,41 +602,42 @@ fn install_page(frame: &mut Frame, area: Rect, app: &App) {
             let (mark, style) = match status {
                 StepStatus::Pending => ("[ ]", DIM),
                 StepStatus::Running => ("[>]", Style::new().fg(ACCENT)),
-                StepStatus::Done => ("[x]", Style::new().fg(Color::Green)),
-                StepStatus::Failed => ("[!]", Style::new().fg(Color::Red)),
+                StepStatus::Done => ("[x]", OK),
+                StepStatus::Failed => ("[!]", FAIL),
             };
             ListItem::new(format!("{mark} {name}")).style(style)
         })
         .collect();
-    frame.render_widget(List::new(items).block(block("Steps")), steps);
+    frame.render_widget(List::new(items), steps);
 
     let rows = log.height.saturating_sub(2) as usize;
-    let skip = app.install.log.len().saturating_sub(rows);
     let mut lines: Vec<Line> = app
         .install
         .log
         .iter()
-        .skip(skip)
-        .map(|l| Line::raw(l.as_str()))
+        .map(|l| Line::styled(l.clone(), DIM))
         .collect();
     match &app.install.result {
         Some(Ok(())) => lines.push(Line::styled(
-            "Installation finished. Press Enter to reboot.",
-            Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
+            "Installation complete. Press Enter to reboot.",
+            OK.add_modifier(Modifier::BOLD),
         )),
         Some(Err(e)) => lines.push(Line::styled(format!("Installation failed: {e}"), DANGER)),
         None => {}
     }
     let skip = lines.len().saturating_sub(rows);
     let lines: Vec<Line> = lines.into_iter().skip(skip).collect();
-    frame.render_widget(Paragraph::new(lines).block(block("Output")), log);
+    frame.render_widget(
+        Paragraph::new(lines).block(field_block("Output", false, None)),
+        log,
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::App;
-    use installer_core::{Boot, Catalog, DiskInfo, Host};
+    use crate::app::ChecksResult;
+    use installer_core::{Boot, Catalog, DiskInfo, Host, Reachability};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -376,7 +645,7 @@ mod tests {
         let catalog = Catalog::from_sources(
             "DE\t+5230+01322\tEurope/Berlin\n",
             "SUPPORTED-LOCALES=\\\nen_US.UTF-8/UTF-8 \\\n",
-            "! layout\n  us  English (US)\n",
+            "! layout\n  us  English (US)\n  ch  German (Switzerland)\n\n! variant\n  fr  ch: French (Switzerland)\n",
         );
         let host = Host {
             boot: Boot::Uefi,
@@ -386,7 +655,7 @@ mod tests {
             disko_url: String::new(),
             nixpkgs_path: None,
         };
-        App::new(catalog, host, || {
+        App::new(catalog, host, false, || {
             vec![DiskInfo {
                 path: "/dev/vda".into(),
                 name: "vda".into(),
@@ -398,8 +667,19 @@ mod tests {
         })
     }
 
-    fn draw(app: &App) -> String {
-        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    fn checks(online: bool) -> ChecksResult {
+        ChecksResult {
+            internet: Reachability {
+                github: online,
+                cache: online,
+            },
+            clock_note: None,
+            on_ac: None,
+        }
+    }
+
+    fn draw_sized(app: &App, w: u16, h: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
         terminal.draw(|f| render(f, app)).unwrap();
         let buf = terminal.backend().buffer().clone();
         (0..buf.area.height)
@@ -412,6 +692,10 @@ mod tests {
             .join("\n")
     }
 
+    fn draw(app: &App) -> String {
+        draw_sized(app, 110, 30)
+    }
+
     #[test]
     fn every_screen_renders_without_panicking() {
         let mut a = app();
@@ -419,8 +703,7 @@ mod tests {
             Screen::Welcome,
             Screen::Timezone,
             Screen::Locale,
-            Screen::KeyboardLayout,
-            Screen::KeyboardVariant,
+            Screen::Keyboard,
             Screen::Disk,
             Screen::DiskOptions,
             Screen::User,
@@ -430,20 +713,91 @@ mod tests {
             Screen::Done,
         ] {
             a.screen = screen;
-            let out = draw(&a);
-            assert!(out.contains(screen.title()), "{screen:?}");
+            for (w, h) in [(110, 30), (80, 24), (40, 12)] {
+                draw_sized(&a, w, h);
+            }
         }
     }
 
     #[test]
-    fn welcome_shows_detected_boot_mode() {
-        let out = draw(&app());
-        assert!(out.contains("UEFI"));
-        assert!(out.contains("erased"));
+    fn step_bar_highlights_the_current_step_and_lists_all() {
+        let mut a = app();
+        a.screen = Screen::Hostname;
+        let out = draw(&a);
+        for (label, _) in BAR {
+            assert!(out.contains(label), "{label}");
+        }
     }
 
     #[test]
-    fn passwords_are_masked_on_screen() {
+    fn narrow_terminals_get_a_compact_step_bar() {
+        let mut a = app();
+        a.screen = Screen::Disk;
+        let out = draw_sized(&a, 60, 24);
+        assert!(out.contains("step 5 of 10"), "{out}");
+    }
+
+    #[test]
+    fn welcome_shows_check_results_in_the_old_style() {
+        let mut a = app();
+        a.start();
+        assert!(draw(&a).contains("Checking prerequisites"));
+
+        a.on_checks(checks(true));
+        let out = draw(&a);
+        assert!(out.contains("[ok] Internet access"));
+        assert!(out.contains("[ok] A usable disk was found"));
+        assert!(out.contains("Press Enter to continue."));
+        assert!(out.contains("UEFI"));
+
+        a.on_checks(checks(false));
+        let out = draw(&a);
+        assert!(out.contains("[FAIL] No internet access"));
+        assert!(out.contains("github.com and cache.nixos.org"));
+        assert!(out.contains("Cannot continue"));
+    }
+
+    #[test]
+    fn welcome_warns_about_clock_and_battery() {
+        let mut a = app();
+        a.start();
+        a.on_checks(ChecksResult {
+            clock_note: Some("The system clock looks wrong".into()),
+            on_ac: Some(false),
+            ..checks(true)
+        });
+        let out = draw(&a);
+        assert!(out.contains("[warn] The system clock looks wrong"));
+        assert!(out.contains("[warn] Not on AC power"));
+    }
+
+    #[test]
+    fn offline_mode_says_so_instead_of_checking_the_internet() {
+        let mut a = app();
+        a.offline = true;
+        a.start();
+        a.on_checks(checks(false));
+        let out = draw(&a);
+        assert!(out.contains("Offline install"));
+        assert!(!out.contains("[FAIL]"));
+    }
+
+    #[test]
+    fn keyboard_screen_shows_both_panes_with_the_variant_title() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut a = app();
+        a.screen = Screen::Keyboard;
+        for c in "switz".chars() {
+            a.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        let out = draw(&a);
+        assert!(out.contains("Layout — "));
+        assert!(out.contains("Variant of \"German (Switzerland)\""));
+        assert!(out.contains("French (Switzerland)"));
+    }
+
+    #[test]
+    fn passwords_are_masked_with_stars() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut a = app();
         a.screen = Screen::User;
@@ -453,7 +807,7 @@ mod tests {
         }
         let out = draw(&a);
         assert!(!out.contains("s3cret"));
-        assert!(out.contains("••••••"));
+        assert!(out.contains("******"));
     }
 
     #[test]
@@ -462,13 +816,34 @@ mod tests {
         a.screen = Screen::Summary;
         let out = draw(&a);
         assert!(out.contains("EVERYTHING ON /dev/vda WILL BE ERASED"));
-        assert!(out.contains("Type \"vda\" to confirm"));
+        assert!(out.contains("Type the disk name (vda)"));
     }
 
     #[test]
-    fn errors_replace_the_hint() {
+    fn errors_show_in_the_field_border_not_a_footer() {
+        use crate::app::FieldError;
         let mut a = app();
-        a.errors = vec!["bad thing".into()];
-        assert!(draw(&a).contains("! bad thing"));
+        a.screen = Screen::Hostname;
+        a.errors = vec![FieldError {
+            target: Target::Hostname,
+            message: "bad thing".into(),
+        }];
+        let out = draw(&a);
+        assert!(out.contains(" bad thing "));
+        // Rendered on the border row, directly under the text row.
+        let lines: Vec<_> = out.lines().collect();
+        let i = lines.iter().position(|l| l.contains("bad thing")).unwrap();
+        assert!(lines[i].contains('└'), "{}", lines[i]);
+    }
+
+    #[test]
+    fn hints_sit_on_the_right_and_notice_on_the_left() {
+        let mut a = app();
+        a.screen = Screen::Hostname;
+        a.on_keymap_result(Ok("ch".into()));
+        let out = draw(&a);
+        let line = out.lines().find(|l| l.contains("Esc prev")).unwrap();
+        assert!(line.contains("Console keyboard set to ch"));
+        assert!(line.find("Console").unwrap() < line.find("Esc").unwrap());
     }
 }

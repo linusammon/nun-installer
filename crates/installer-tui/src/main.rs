@@ -1,10 +1,10 @@
 mod app;
 mod headless;
-mod install;
 mod privilege;
 mod tui;
 mod ui;
 mod widgets;
+mod workers;
 
 use installer_core::{Catalog, CatalogPaths, Host};
 use std::path::PathBuf;

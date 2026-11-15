@@ -1,11 +1,11 @@
 //! The installer's state machine. It knows nothing about the terminal: keys go
-//! in, state changes and an [`Effect`] come out, which keeps it testable.
+//! in, state changes and [`Effect`]s come out, which keeps it testable.
 
 use crate::widgets::{FilterList, Item, TextInput};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use installer_core::{
     build_plan, hash_password, human_size, render, validate, Answers, Catalog, Disk, DiskInfo,
-    Field, Host, Plan, Secret, System, User, SCHEMA_VERSION,
+    Field, Host, Plan, Reachability, Secret, System, User, SCHEMA_VERSION,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,8 +13,7 @@ pub enum Screen {
     Welcome,
     Timezone,
     Locale,
-    KeyboardLayout,
-    KeyboardVariant,
+    Keyboard,
     Disk,
     DiskOptions,
     User,
@@ -24,32 +23,122 @@ pub enum Screen {
     Done,
 }
 
+/// The step bar at the top: a label and the screens that belong to it.
+pub const BAR: &[(&str, &[Screen])] = &[
+    ("Welcome", &[Screen::Welcome]),
+    ("Timezone", &[Screen::Timezone]),
+    ("Language", &[Screen::Locale]),
+    ("Keyboard", &[Screen::Keyboard]),
+    ("Disk", &[Screen::Disk, Screen::DiskOptions]),
+    ("User", &[Screen::User]),
+    ("Hostname", &[Screen::Hostname]),
+    ("Review", &[Screen::Summary]),
+    ("Install", &[Screen::Installing]),
+    ("Done", &[Screen::Done]),
+];
+
+/// Screens in the order they are walked through.
+const FLOW: &[Screen] = &[
+    Screen::Welcome,
+    Screen::Timezone,
+    Screen::Locale,
+    Screen::Keyboard,
+    Screen::Disk,
+    Screen::DiskOptions,
+    Screen::User,
+    Screen::Hostname,
+    Screen::Summary,
+    Screen::Installing,
+    Screen::Done,
+];
+
 impl Screen {
-    pub fn title(self) -> &'static str {
-        match self {
-            Screen::Welcome => "Welcome",
-            Screen::Timezone => "Timezone",
-            Screen::Locale => "Language",
-            Screen::KeyboardLayout => "Keyboard layout",
-            Screen::KeyboardVariant => "Keyboard variant",
-            Screen::Disk => "Disk",
-            Screen::DiskOptions => "Disk options",
-            Screen::User => "User account",
-            Screen::Hostname => "Hostname",
-            Screen::Summary => "Review and install",
-            Screen::Installing => "Installing",
-            Screen::Done => "Finished",
-        }
+    pub fn bar_index(self) -> usize {
+        BAR.iter()
+            .position(|(_, screens)| screens.contains(&self))
+            .unwrap_or(0)
     }
 }
 
-/// What the event loop has to do after a key press.
+/// Work the event loop has to do on the app's behalf.
 #[derive(Debug)]
 pub enum Effect {
-    None,
     Quit,
     Install(Plan),
     Reboot,
+    /// Load this layout into the live console.
+    ApplyKeymap {
+        layout: String,
+        variant: Option<String>,
+    },
+    /// Re-run the Welcome checks. `internet` is false in offline mode.
+    RunChecks {
+        internet: bool,
+    },
+}
+
+/// Results coming back from background threads.
+#[derive(Debug)]
+pub enum AppEvent {
+    Install(InstallEvent),
+    /// `Ok` carries a short description of what was applied.
+    Keymap(Result<String, String>),
+    Checks(ChecksResult),
+}
+
+#[derive(Debug, Clone)]
+pub struct ChecksResult {
+    pub internet: Reachability,
+    pub clock_note: Option<String>,
+    /// `None`: no battery. `Some(false)`: running on battery.
+    pub on_ac: Option<bool>,
+}
+
+#[derive(Debug, Default)]
+pub struct Checks {
+    pub running: bool,
+    pub result: Option<ChecksResult>,
+}
+
+/// Which widget an error belongs to, so it can be drawn in that widget's border.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    /// The list or screen as a whole.
+    Screen,
+    Disk,
+    Swap,
+    Passphrase,
+    PassphraseConfirm,
+    Username,
+    Password,
+    PasswordConfirm,
+    Hostname,
+    Confirm,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldError {
+    pub target: Target,
+    pub message: String,
+}
+
+fn field_target(field: Field) -> Target {
+    match field {
+        Field::DiskDevice => Target::Disk,
+        Field::SwapSize => Target::Swap,
+        Field::EncryptionPassword => Target::Passphrase,
+        Field::UserName => Target::Username,
+        Field::UserPasswordHash => Target::Password,
+        Field::Hostname => Target::Hostname,
+        Field::SchemaVersion | Field::Locale | Field::Timezone => Target::Screen,
+        Field::KeyboardLayout | Field::KeyboardVariant => Target::Screen,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pane {
+    Layout,
+    Variant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,13 +184,20 @@ pub struct App {
     pub screen: Screen,
     pub catalog: Catalog,
     pub host: Host,
+    /// Offline install: everything needed is on the install medium, so the
+    /// internet check is skipped.
+    pub offline: bool,
     rescan: Box<dyn Fn() -> Vec<DiskInfo>>,
     pub disks: Vec<DiskInfo>,
+    pub checks: Checks,
 
     pub timezone: FilterList,
     pub locale: FilterList,
     pub layout: FilterList,
     pub variant: FilterList,
+    pub pane: Pane,
+    /// Layout the variant list was built for.
+    variant_layout: String,
 
     pub disk_selected: usize,
     pub swap: TextInput,
@@ -119,7 +215,9 @@ pub struct App {
     pub hostname: TextInput,
     pub confirm: TextInput,
 
-    pub errors: Vec<String>,
+    pub errors: Vec<FieldError>,
+    /// A non-error status line, for example the keymap that was applied.
+    pub notice: Option<String>,
     pub install: InstallState,
 }
 
@@ -137,7 +235,12 @@ fn text(key: &KeyEvent) -> Option<char> {
 }
 
 impl App {
-    pub fn new(catalog: Catalog, host: Host, rescan: impl Fn() -> Vec<DiskInfo> + 'static) -> Self {
+    pub fn new(
+        catalog: Catalog,
+        host: Host,
+        offline: bool,
+        rescan: impl Fn() -> Vec<DiskInfo> + 'static,
+    ) -> Self {
         let disks = rescan();
         let items = |v: &[String]| v.iter().map(|s| Item::new(s, s)).collect::<Vec<_>>();
         let mut timezone = FilterList::new(items(&catalog.timezones));
@@ -148,22 +251,26 @@ impl App {
             catalog
                 .layouts
                 .iter()
-                .map(|l| Item::new(&l.name, &format!("{} - {}", l.name, l.description)))
+                .map(|l| Item::with_detail(&l.name, &l.description, &l.name))
                 .collect(),
         );
         layout.select_value("us");
         let disk_selected = disks.iter().position(DiskInfo::selectable).unwrap_or(0);
 
-        Self {
+        let mut app = Self {
             screen: Screen::Welcome,
             catalog,
             host,
+            offline,
             rescan: Box::new(rescan),
             disks,
+            checks: Checks::default(),
             timezone,
             locale,
             layout,
             variant: FilterList::default(),
+            pane: Pane::Layout,
+            variant_layout: String::new(),
             disk_selected,
             swap: TextInput::new("4096"),
             encrypt: false,
@@ -178,14 +285,62 @@ impl App {
             hostname: TextInput::new("nun"),
             confirm: TextInput::default(),
             errors: Vec::new(),
+            notice: None,
             install: InstallState::default(),
-        }
+        };
+        app.sync_variants();
+        app
+    }
+
+    /// Effects to run when the installer starts.
+    pub fn start(&mut self) -> Vec<Effect> {
+        self.checks.running = true;
+        vec![Effect::RunChecks {
+            internet: !self.offline,
+        }]
     }
 
     pub fn set_default_timezone(&mut self, tz: &str) {
         if self.catalog.has_timezone(tz) {
             self.timezone.select_value(tz);
         }
+    }
+
+    // ---- welcome checks ----
+
+    pub fn has_usable_disk(&self) -> bool {
+        self.disks.iter().any(DiskInfo::selectable)
+    }
+
+    pub fn internet_ok(&self) -> bool {
+        self.offline
+            || self
+                .checks
+                .result
+                .as_ref()
+                .is_some_and(|r| r.internet.online())
+    }
+
+    /// Whether the checks that must pass have passed.
+    pub fn can_continue(&self) -> bool {
+        !self.checks.running
+            && self.checks.result.is_some()
+            && self.internet_ok()
+            && self.has_usable_disk()
+    }
+
+    pub fn on_checks(&mut self, result: ChecksResult) {
+        self.checks = Checks {
+            running: false,
+            result: Some(result),
+        };
+    }
+
+    pub fn on_keymap_result(&mut self, result: Result<String, String>) {
+        self.notice = Some(match result {
+            Ok(applied) => format!("Console keyboard set to {applied}"),
+            Err(e) => format!("Console keyboard not changed: {e}"),
+        });
     }
 
     // ---- derived values ----
@@ -251,58 +406,42 @@ impl App {
         }
     }
 
-    // ---- navigation ----
+    // ---- errors ----
 
-    /// Screens the user walks through, for the "step n of m" header.
-    pub fn flow(&self) -> Vec<Screen> {
-        let mut flow = vec![Screen::Timezone, Screen::Locale, Screen::KeyboardLayout];
-        if self.has_variants() {
-            flow.push(Screen::KeyboardVariant);
-        }
-        flow.extend([
-            Screen::Disk,
-            Screen::DiskOptions,
-            Screen::User,
-            Screen::Hostname,
-            Screen::Summary,
-        ]);
-        flow
+    pub fn error_for(&self, target: Target) -> Option<&str> {
+        self.errors
+            .iter()
+            .find(|e| e.target == target)
+            .map(|e| e.message.as_str())
     }
 
-    pub fn progress(&self) -> Option<(usize, usize)> {
-        let flow = self.flow();
-        let i = flow.iter().position(|s| *s == self.screen)?;
-        Some((i + 1, flow.len()))
-    }
-
-    fn next_screen(&self) -> Screen {
-        let flow = self.flow();
-        match flow.iter().position(|s| *s == self.screen) {
-            Some(i) if i + 1 < flow.len() => flow[i + 1],
-            Some(_) => Screen::Installing,
-            None => Screen::Timezone,
-        }
-    }
-
-    fn prev_screen(&self) -> Screen {
-        let flow = self.flow();
-        match flow.iter().position(|s| *s == self.screen) {
-            Some(i) if i > 0 => flow[i - 1],
-            _ => Screen::Welcome,
-        }
-    }
-
-    fn back(&mut self) {
-        self.screen = self.prev_screen();
+    fn fail(&mut self, target: Target, message: impl Into<String>) {
+        self.errors = vec![FieldError {
+            target,
+            message: message.into(),
+        }];
     }
 
     /// Errors from validating everything, limited to the fields of one screen.
-    fn errors_for(&self, fields: &[Field]) -> Vec<String> {
+    fn errors_for(&self, fields: &[Field]) -> Vec<FieldError> {
         validate(&self.answers(), &self.catalog)
             .into_iter()
             .filter(|e| fields.contains(&e.field))
-            .map(|e| e.message)
+            .map(|e| FieldError {
+                target: field_target(e.field),
+                message: e.message,
+            })
             .collect()
+    }
+
+    // ---- navigation ----
+
+    fn index(&self) -> usize {
+        FLOW.iter().position(|s| *s == self.screen).unwrap_or(0)
+    }
+
+    fn back(&mut self) {
+        self.screen = FLOW[self.index().saturating_sub(1)];
     }
 
     /// Move on if this screen's answers are valid, otherwise show why not.
@@ -312,96 +451,126 @@ impl App {
             self.errors = errors;
             return;
         }
-        if self.screen == Screen::KeyboardLayout {
-            self.rebuild_variants();
-        }
-        self.screen = self.next_screen();
+        self.screen = FLOW[(self.index() + 1).min(FLOW.len() - 1)];
     }
 
-    fn rebuild_variants(&mut self) {
-        let mut items = vec![Item::new("", "(default)")];
-        if let Some(l) = self.catalog.layout(&self.layout_value()) {
+    /// Keep the variant pane in step with the highlighted layout.
+    fn sync_variants(&mut self) {
+        let layout = self.layout_value();
+        if layout == self.variant_layout {
+            return;
+        }
+        let mut items = vec![Item::with_detail("", "(default)", "")];
+        if let Some(l) = self.catalog.layout(&layout) {
             items.extend(
                 l.variants
                     .iter()
-                    .map(|v| Item::new(&v.name, &format!("{} - {}", v.name, v.description))),
+                    .map(|v| Item::with_detail(&v.name, &v.description, &v.name)),
             );
         }
         self.variant = FilterList::new(items);
+        self.variant_layout = layout;
+    }
+
+    /// Description of the highlighted layout, for the variant pane's title.
+    pub fn layout_description(&self) -> String {
+        self.layout
+            .selected()
+            .map(|i| i.label.clone())
+            .unwrap_or_default()
     }
 
     // ---- input ----
 
-    pub fn handle_key(&mut self, key: KeyEvent) -> Effect {
+    pub fn handle_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return if self.screen == Screen::Installing {
-                Effect::None
+                Vec::new()
             } else {
-                Effect::Quit
+                vec![Effect::Quit]
             };
         }
         self.errors.clear();
         match self.screen {
-            Screen::Welcome => match key.code {
-                KeyCode::Enter => {
-                    self.screen = Screen::Timezone;
-                    Effect::None
-                }
-                KeyCode::Char('q') | KeyCode::Esc => Effect::Quit,
-                _ => Effect::None,
-            },
-            Screen::Timezone
-            | Screen::Locale
-            | Screen::KeyboardLayout
-            | Screen::KeyboardVariant => {
+            Screen::Welcome => self.welcome_key(key),
+            Screen::Timezone | Screen::Locale => {
                 self.list_key(key);
-                Effect::None
+                Vec::new()
             }
+            Screen::Keyboard => self.keyboard_key(key),
             Screen::Disk => {
                 self.disk_key(key);
-                Effect::None
+                Vec::new()
             }
             Screen::DiskOptions => {
                 self.options_key(key);
-                Effect::None
+                Vec::new()
             }
             Screen::User => {
                 self.user_key(key);
-                Effect::None
+                Vec::new()
             }
             Screen::Hostname => {
                 self.hostname_key(key);
-                Effect::None
+                Vec::new()
             }
             Screen::Summary => self.summary_key(key),
-            Screen::Installing => Effect::None,
+            Screen::Installing => Vec::new(),
             Screen::Done => match key.code {
-                KeyCode::Enter if self.install.result == Some(Ok(())) => Effect::Reboot,
-                KeyCode::Enter | KeyCode::Char('q') | KeyCode::Esc => Effect::Quit,
-                _ => Effect::None,
+                KeyCode::Enter if self.install.result == Some(Ok(())) => vec![Effect::Reboot],
+                KeyCode::Enter | KeyCode::Char('q') | KeyCode::Esc => vec![Effect::Quit],
+                _ => Vec::new(),
             },
         }
     }
 
-    pub fn list_mut(&mut self) -> Option<&mut FilterList> {
-        match self.screen {
-            Screen::Timezone => Some(&mut self.timezone),
-            Screen::Locale => Some(&mut self.locale),
-            Screen::KeyboardLayout => Some(&mut self.layout),
-            Screen::KeyboardVariant => Some(&mut self.variant),
-            _ => None,
+    fn welcome_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        match key.code {
+            KeyCode::Enter if self.can_continue() => self.screen = Screen::Timezone,
+            KeyCode::Char('r') => {
+                self.disks = (self.rescan)();
+                self.disk_selected = self
+                    .disks
+                    .iter()
+                    .position(DiskInfo::selectable)
+                    .unwrap_or(0);
+                self.checks.running = true;
+                return vec![Effect::RunChecks {
+                    internet: !self.offline,
+                }];
+            }
+            KeyCode::Char('q') | KeyCode::Esc => return vec![Effect::Quit],
+            _ => {}
         }
+        Vec::new()
     }
 
-    fn list_key(&mut self, key: KeyEvent) {
-        let screen = self.screen;
-        let Some(list) = self.list_mut() else { return };
+    /// Apply a navigation or editing key to a filterable list. Returns whether
+    /// it was consumed. Enter and Esc are left to the caller.
+    fn list_edit(list: &mut FilterList, key: &KeyEvent) -> bool {
         match key.code {
             KeyCode::Up => list.up(),
             KeyCode::Down => list.down(),
             KeyCode::PageUp => list.page(-10),
             KeyCode::PageDown => list.page(10),
             KeyCode::Backspace => list.pop_filter(),
+            _ => match text(key) {
+                Some(c) => list.push_filter(c),
+                None => return false,
+            },
+        }
+        true
+    }
+
+    fn list_key(&mut self, key: KeyEvent) {
+        let (field, list) = match self.screen {
+            Screen::Timezone => (Field::Timezone, &mut self.timezone),
+            _ => (Field::Locale, &mut self.locale),
+        };
+        if Self::list_edit(list, &key) {
+            return;
+        }
+        match key.code {
             KeyCode::Esc => {
                 if list.filter().is_empty() {
                     self.back();
@@ -410,24 +579,76 @@ impl App {
                 }
             }
             KeyCode::Enter => {
-                let field = match screen {
-                    Screen::Timezone => Field::Timezone,
-                    Screen::Locale => Field::Locale,
-                    Screen::KeyboardLayout => Field::KeyboardLayout,
-                    _ => Field::KeyboardVariant,
-                };
                 if list.selected().is_none() {
-                    self.errors = vec!["nothing matches, edit the filter".into()];
+                    self.fail(Target::Screen, "nothing matches, edit the filter");
                 } else {
                     self.advance(&[field]);
                 }
             }
+            _ => {}
+        }
+    }
+
+    fn keyboard_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        match key.code {
+            KeyCode::Tab => {
+                self.pane = match self.pane {
+                    Pane::Layout => Pane::Variant,
+                    Pane::Variant => Pane::Layout,
+                };
+            }
+            KeyCode::Left => self.pane = Pane::Layout,
+            KeyCode::Right => self.pane = Pane::Variant,
+            KeyCode::Esc => {
+                let list = match self.pane {
+                    Pane::Layout => &mut self.layout,
+                    Pane::Variant => &mut self.variant,
+                };
+                if !list.filter().is_empty() {
+                    list.clear_filter();
+                    if self.pane == Pane::Layout {
+                        self.sync_variants();
+                    }
+                } else if self.pane == Pane::Variant {
+                    self.pane = Pane::Layout;
+                } else {
+                    self.back();
+                }
+            }
+            KeyCode::Enter => {
+                if self.layout.selected().is_none() {
+                    self.fail(Target::Screen, "nothing matches, edit the filter");
+                } else if self.pane == Pane::Layout && self.has_variants() {
+                    // Let the user pick a variant; Enter there confirms.
+                    self.pane = Pane::Variant;
+                } else {
+                    return self.confirm_keyboard();
+                }
+            }
             _ => {
-                if let Some(c) = text(&key) {
-                    list.push_filter(c);
+                let list = match self.pane {
+                    Pane::Layout => &mut self.layout,
+                    Pane::Variant => &mut self.variant,
+                };
+                if Self::list_edit(list, &key) && self.pane == Pane::Layout {
+                    self.sync_variants();
                 }
             }
         }
+        Vec::new()
+    }
+
+    fn confirm_keyboard(&mut self) -> Vec<Effect> {
+        let errors = self.errors_for(&[Field::KeyboardLayout, Field::KeyboardVariant]);
+        if !errors.is_empty() {
+            self.errors = errors;
+            return Vec::new();
+        }
+        self.screen = Screen::Disk;
+        vec![Effect::ApplyKeymap {
+            layout: self.layout_value(),
+            variant: self.variant_value(),
+        }]
     }
 
     fn disk_key(&mut self, key: KeyEvent) {
@@ -447,9 +668,15 @@ impl App {
             }
             KeyCode::Esc => self.back(),
             KeyCode::Enter => match self.selected_disk() {
-                None => self.errors = vec!["no disk found, press r to scan again".into()],
+                None => self.fail(Target::Disk, "no disk found, press r to scan again"),
                 Some(d) if !d.selectable() => {
-                    self.errors = d.rejected.iter().map(ToString::to_string).collect();
+                    let msg = d
+                        .rejected
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    self.fail(Target::Disk, msg);
                 }
                 Some(_) => self.advance(&[Field::DiskDevice]),
             },
@@ -498,11 +725,17 @@ impl App {
     fn submit_options(&mut self) {
         let mut errors = Vec::new();
         if self.swap.value().parse::<u32>().is_err() {
-            errors.push("swap size must be a number of MiB (0 for none)".to_owned());
+            errors.push(FieldError {
+                target: Target::Swap,
+                message: "enter a number of MiB (0 for none)".into(),
+            });
         }
         errors.extend(self.errors_for(&[Field::SwapSize, Field::EncryptionPassword]));
         if self.encrypt && self.passphrase.value() != self.passphrase_confirm.value() {
-            errors.push("passphrases do not match".into());
+            errors.push(FieldError {
+                target: Target::PassphraseConfirm,
+                message: "passphrases do not match".into(),
+            });
         }
         if errors.is_empty() {
             self.advance(&[]);
@@ -550,9 +783,15 @@ impl App {
             && self.password_hash.is_some();
         if !keep_existing {
             if self.password.is_empty() {
-                errors.push("password must not be empty".into());
+                errors.push(FieldError {
+                    target: Target::Password,
+                    message: "password must not be empty".into(),
+                });
             } else if self.password.value() != self.password_confirm.value() {
-                errors.push("passwords do not match".into());
+                errors.push(FieldError {
+                    target: Target::PasswordConfirm,
+                    message: "password confirmation doesn't match".into(),
+                });
             }
         }
         if !errors.is_empty() {
@@ -563,7 +802,7 @@ impl App {
             match hash_password(self.password.value()) {
                 Ok(h) => self.password_hash = Some(h),
                 Err(e) => {
-                    self.errors = vec![e.to_string()];
+                    self.fail(Target::Password, e.to_string());
                     return;
                 }
             }
@@ -593,30 +832,31 @@ impl App {
             .unwrap_or_default()
     }
 
-    fn summary_key(&mut self, key: KeyEvent) -> Effect {
+    fn summary_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         match key.code {
             KeyCode::Esc => {
                 self.confirm.clear();
                 self.back();
             }
             KeyCode::Backspace => self.confirm.pop(),
-            KeyCode::Enter => return self.start_install(),
+            KeyCode::Enter => return self.start_install().into_iter().collect(),
             _ => {
                 if let Some(c) = text(&key) {
                     self.confirm.push(c);
                 }
             }
         }
-        Effect::None
+        Vec::new()
     }
 
-    fn start_install(&mut self) -> Effect {
+    fn start_install(&mut self) -> Option<Effect> {
         if self.confirm.value() != self.confirm_word() {
-            self.errors = vec![format!(
-                "type {} to confirm that it will be erased",
-                self.confirm_word()
-            )];
-            return Effect::None;
+            let word = self.confirm_word();
+            self.fail(
+                Target::Confirm,
+                format!("type {word} to confirm that it will be erased"),
+            );
+            return None;
         }
         // The disk may have been mounted since it was picked.
         self.disks = (self.rescan)();
@@ -627,23 +867,24 @@ impl App {
             .find(|d| d.path.to_string_lossy() == path)
             .is_some_and(DiskInfo::selectable);
         if !still_ok {
-            self.errors = vec![format!(
-                "{path} is no longer available, go back and choose again"
-            )];
-            return Effect::None;
+            self.fail(
+                Target::Confirm,
+                format!("{path} is no longer available, go back and choose again"),
+            );
+            return None;
         }
 
         let answers = self.answers();
         let errors = validate(&answers, &self.catalog);
         if let Some(e) = errors.first() {
-            self.errors = vec![format!("{:?}: {}", e.field, e.message)];
-            return Effect::None;
+            self.fail(Target::Confirm, format!("{:?}: {}", e.field, e.message));
+            return None;
         }
         let plan = match render(&answers, &self.host) {
             Ok(files) => build_plan(&answers, &files, &self.host),
             Err(e) => {
-                self.errors = vec![e.to_string()];
-                return Effect::None;
+                self.fail(Target::Confirm, e.to_string());
+                return None;
             }
         };
         self.install = InstallState {
@@ -655,7 +896,7 @@ impl App {
             ..InstallState::default()
         };
         self.screen = Screen::Installing;
-        Effect::Install(plan)
+        Some(Effect::Install(plan))
     }
 
     pub fn on_install_event(&mut self, ev: InstallEvent) {
@@ -688,19 +929,14 @@ impl App {
         }
     }
 
-    /// One-line description of a disk for lists and the summary.
+    /// One-line description of a disk, for the summary.
     pub fn disk_label(d: &DiskInfo) -> String {
         let model = if d.model.is_empty() {
             String::new()
         } else {
             format!("  {}", d.model)
         };
-        let removable = if d.removable { "  [removable]" } else { "" };
-        format!(
-            "{}  {}{model}{removable}",
-            d.path.display(),
-            human_size(d.size_bytes)
-        )
+        format!("{}  {}{model}", d.path.display(), human_size(d.size_bytes))
     }
 }
 
@@ -739,22 +975,43 @@ mod tests {
         }
     }
 
-    fn app() -> App {
-        App::new(catalog(), host(), || {
-            vec![
-                disk(
-                    "sda",
-                    vec![SafetyError::Mounted {
-                        device: "/dev/sda1".into(),
-                        target: "/boot".into(),
-                    }],
-                ),
-                disk("vda", vec![]),
-            ]
-        })
+    fn two_disks() -> Vec<DiskInfo> {
+        vec![
+            disk(
+                "sda",
+                vec![SafetyError::Mounted {
+                    device: "/dev/sda1".into(),
+                    target: "/boot".into(),
+                }],
+            ),
+            disk("vda", vec![]),
+        ]
     }
 
-    fn press(app: &mut App, code: KeyCode) -> Effect {
+    fn online() -> ChecksResult {
+        ChecksResult {
+            internet: Reachability {
+                github: true,
+                cache: true,
+            },
+            clock_note: None,
+            on_ac: None,
+        }
+    }
+
+    fn app() -> App {
+        App::new(catalog(), host(), false, two_disks)
+    }
+
+    /// An app whose Welcome checks have passed.
+    fn ready() -> App {
+        let mut a = app();
+        a.start();
+        a.on_checks(online());
+        a
+    }
+
+    fn press(app: &mut App, code: KeyCode) -> Vec<Effect> {
         app.handle_key(KeyEvent::new(code, KeyModifiers::NONE))
     }
 
@@ -764,7 +1021,15 @@ mod tests {
         }
     }
 
-    /// Walk to the screen after the keyboard pages, keeping defaults (no variant).
+    fn message(app: &App) -> String {
+        app.errors
+            .iter()
+            .map(|e| e.message.as_str())
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+
+    /// Walk to the Disk screen, keeping defaults (us layout, no variants).
     fn to_disk(app: &mut App) {
         press(app, KeyCode::Enter); // welcome
         press(app, KeyCode::Enter); // timezone
@@ -788,16 +1053,75 @@ mod tests {
     }
 
     #[test]
-    fn welcome_starts_or_quits() {
+    fn start_requests_the_checks() {
         let mut a = app();
-        assert!(matches!(press(&mut a, KeyCode::Char('q')), Effect::Quit));
+        let fx = a.start();
+        assert!(matches!(fx[..], [Effect::RunChecks { internet: true }]));
+        assert!(a.checks.running);
+    }
+
+    #[test]
+    fn welcome_blocks_until_checks_pass() {
+        let mut a = app();
+        a.start();
+        press(&mut a, KeyCode::Enter);
+        assert_eq!(a.screen, Screen::Welcome, "still running");
+
+        a.on_checks(ChecksResult {
+            internet: Reachability {
+                github: true,
+                cache: false,
+            },
+            ..online()
+        });
+        assert!(!a.can_continue());
+        press(&mut a, KeyCode::Enter);
+        assert_eq!(a.screen, Screen::Welcome, "no internet");
+
+        a.on_checks(online());
         press(&mut a, KeyCode::Enter);
         assert_eq!(a.screen, Screen::Timezone);
     }
 
     #[test]
+    fn welcome_needs_a_usable_disk() {
+        let mut a = App::new(catalog(), host(), false, || vec![two_disks().remove(0)]);
+        a.start();
+        a.on_checks(online());
+        assert!(!a.has_usable_disk());
+        press(&mut a, KeyCode::Enter);
+        assert_eq!(a.screen, Screen::Welcome);
+    }
+
+    #[test]
+    fn offline_mode_skips_the_internet_requirement() {
+        let mut a = App::new(catalog(), host(), true, two_disks);
+        let fx = a.start();
+        assert!(matches!(fx[..], [Effect::RunChecks { internet: false }]));
+        a.on_checks(ChecksResult {
+            internet: Reachability {
+                github: false,
+                cache: false,
+            },
+            ..online()
+        });
+        assert!(a.can_continue());
+    }
+
+    #[test]
+    fn r_rechecks_and_q_quits() {
+        let mut a = ready();
+        let fx = press(&mut a, KeyCode::Char('r'));
+        assert!(matches!(fx[..], [Effect::RunChecks { internet: true }]));
+        assert!(a.checks.running);
+        assert!(!a.can_continue());
+        let fx = press(&mut a, KeyCode::Char('q'));
+        assert!(matches!(fx[..], [Effect::Quit]));
+    }
+
+    #[test]
     fn typing_filters_and_choice_reaches_answers() {
-        let mut a = app();
+        let mut a = ready();
         press(&mut a, KeyCode::Enter);
         type_str(&mut a, "zur");
         press(&mut a, KeyCode::Enter);
@@ -807,7 +1131,7 @@ mod tests {
 
     #[test]
     fn esc_clears_filter_before_going_back() {
-        let mut a = app();
+        let mut a = ready();
         press(&mut a, KeyCode::Enter);
         type_str(&mut a, "zur");
         press(&mut a, KeyCode::Esc);
@@ -819,7 +1143,7 @@ mod tests {
 
     #[test]
     fn empty_filter_result_cannot_be_submitted() {
-        let mut a = app();
+        let mut a = ready();
         press(&mut a, KeyCode::Enter);
         type_str(&mut a, "zzz");
         press(&mut a, KeyCode::Enter);
@@ -827,57 +1151,120 @@ mod tests {
         assert!(!a.errors.is_empty());
     }
 
-    #[test]
-    fn variant_screen_only_for_layouts_that_have_variants() {
-        let mut a = app();
-        to_disk(&mut a);
-        assert_eq!(a.screen, Screen::Disk);
+    fn to_keyboard(a: &mut App) {
+        for _ in 0..3 {
+            press(a, KeyCode::Enter);
+        }
+        assert_eq!(a.screen, Screen::Keyboard);
+    }
 
-        let mut a = app();
-        press(&mut a, KeyCode::Enter);
-        press(&mut a, KeyCode::Enter);
-        press(&mut a, KeyCode::Enter);
-        // now on keyboard layout
-        a.layout.clear_filter();
+    #[test]
+    fn layout_without_variants_confirms_straight_away_and_applies_the_keymap() {
+        let mut a = ready();
+        to_keyboard(&mut a);
+        let fx = press(&mut a, KeyCode::Enter);
+        assert_eq!(a.screen, Screen::Disk);
+        let [Effect::ApplyKeymap { layout, variant }] = &fx[..] else {
+            panic!("expected keymap effect, got {fx:?}");
+        };
+        assert_eq!((layout.as_str(), variant.as_deref()), ("us", None));
+    }
+
+    #[test]
+    fn variant_list_follows_the_highlighted_layout() {
+        let mut a = ready();
+        to_keyboard(&mut a);
+        assert_eq!(a.variant.visible().len(), 1, "us has only (default)");
         type_str(&mut a, "switz");
         assert_eq!(a.layout_value(), "ch");
-        press(&mut a, KeyCode::Enter);
-        assert_eq!(a.screen, Screen::KeyboardVariant);
-        press(&mut a, KeyCode::Down); // (default) -> fr
-        press(&mut a, KeyCode::Enter);
+        let names: Vec<_> = a
+            .variant
+            .visible()
+            .iter()
+            .map(|i| i.value.clone())
+            .collect();
+        assert_eq!(names, ["", "fr"]);
+        assert_eq!(a.layout_description(), "German (Switzerland)");
+    }
+
+    #[test]
+    fn enter_on_a_layout_with_variants_moves_to_the_variant_pane_then_confirms() {
+        let mut a = ready();
+        to_keyboard(&mut a);
+        type_str(&mut a, "switz");
+        assert!(press(&mut a, KeyCode::Enter).is_empty());
+        assert_eq!(a.screen, Screen::Keyboard);
+        assert_eq!(a.pane, Pane::Variant);
+
+        type_str(&mut a, "french");
+        let fx = press(&mut a, KeyCode::Enter);
         assert_eq!(a.screen, Screen::Disk);
+        let [Effect::ApplyKeymap { layout, variant }] = &fx[..] else {
+            panic!("expected keymap effect, got {fx:?}");
+        };
+        assert_eq!((layout.as_str(), variant.as_deref()), ("ch", Some("fr")));
         assert_eq!(a.answers().system.keyboard_variant.as_deref(), Some("fr"));
-        press(&mut a, KeyCode::Esc);
-        assert_eq!(a.screen, Screen::KeyboardVariant);
     }
 
     #[test]
     fn default_variant_means_none() {
-        let mut a = app();
-        press(&mut a, KeyCode::Enter);
-        press(&mut a, KeyCode::Enter);
-        press(&mut a, KeyCode::Enter);
+        let mut a = ready();
+        to_keyboard(&mut a);
         type_str(&mut a, "switz");
         press(&mut a, KeyCode::Enter);
-        press(&mut a, KeyCode::Enter);
+        let fx = press(&mut a, KeyCode::Enter);
+        assert!(matches!(
+            &fx[..],
+            [Effect::ApplyKeymap { variant: None, .. }]
+        ));
         assert_eq!(a.answers().system.keyboard_variant, None);
     }
 
     #[test]
+    fn tab_switches_panes_and_esc_steps_back_through_them() {
+        let mut a = ready();
+        to_keyboard(&mut a);
+        type_str(&mut a, "switz");
+        press(&mut a, KeyCode::Tab);
+        assert_eq!(a.pane, Pane::Variant);
+        type_str(&mut a, "fr");
+        press(&mut a, KeyCode::Esc);
+        assert_eq!(a.variant.filter(), "", "esc clears the filter first");
+        assert_eq!(a.pane, Pane::Variant);
+        press(&mut a, KeyCode::Esc);
+        assert_eq!(a.pane, Pane::Layout);
+        press(&mut a, KeyCode::Esc);
+        assert_eq!(a.layout.filter(), "");
+        press(&mut a, KeyCode::Esc);
+        assert_eq!(a.screen, Screen::Locale);
+    }
+
+    #[test]
+    fn typing_goes_to_the_focused_pane_only() {
+        let mut a = ready();
+        to_keyboard(&mut a);
+        press(&mut a, KeyCode::Tab);
+        type_str(&mut a, "x");
+        assert_eq!(a.variant.filter(), "x");
+        assert_eq!(a.layout.filter(), "");
+    }
+
+    #[test]
     fn disk_picker_starts_on_first_usable_disk_and_refuses_rejected_ones() {
-        let mut a = app();
+        let mut a = ready();
         to_disk(&mut a);
         assert_eq!(a.selected_disk().unwrap().name, "vda");
         press(&mut a, KeyCode::Up);
         assert_eq!(a.selected_disk().unwrap().name, "sda");
         press(&mut a, KeyCode::Enter);
         assert_eq!(a.screen, Screen::Disk);
-        assert!(a.errors[0].contains("mounted"));
+        assert!(message(&a).contains("mounted"));
+        assert_eq!(a.errors[0].target, Target::Disk);
     }
 
     #[test]
     fn encryption_fields_appear_only_when_enabled() {
-        let mut a = app();
+        let mut a = ready();
         to_disk(&mut a);
         press(&mut a, KeyCode::Enter);
         assert_eq!(a.screen, Screen::DiskOptions);
@@ -893,20 +1280,23 @@ mod tests {
     }
 
     #[test]
-    fn passphrase_rules_are_enforced() {
-        let mut a = app();
+    fn passphrase_rules_are_enforced_on_the_right_field() {
+        let mut a = ready();
         to_disk(&mut a);
         press(&mut a, KeyCode::Enter);
         press(&mut a, KeyCode::Tab);
         press(&mut a, KeyCode::Char(' '));
         press(&mut a, KeyCode::Enter);
         assert_eq!(a.screen, Screen::DiskOptions, "empty passphrase");
+        assert!(a.error_for(Target::Passphrase).is_some());
         press(&mut a, KeyCode::Tab);
         type_str(&mut a, "longenough1");
         press(&mut a, KeyCode::Tab);
         type_str(&mut a, "different11");
         press(&mut a, KeyCode::Enter);
-        assert!(a.errors.iter().any(|e| e.contains("do not match")));
+        assert!(a
+            .error_for(Target::PassphraseConfirm)
+            .is_some_and(|m| m.contains("do not match")));
         for _ in 0..11 {
             press(&mut a, KeyCode::Backspace);
         }
@@ -921,7 +1311,7 @@ mod tests {
 
     #[test]
     fn swap_field_takes_digits_only() {
-        let mut a = app();
+        let mut a = ready();
         to_disk(&mut a);
         press(&mut a, KeyCode::Enter);
         for _ in 0..4 {
@@ -934,7 +1324,7 @@ mod tests {
 
     #[test]
     fn user_screen_checks_name_and_matching_passwords_then_keeps_only_the_hash() {
-        let mut a = app();
+        let mut a = ready();
         to_disk(&mut a);
         press(&mut a, KeyCode::Enter);
         press(&mut a, KeyCode::Enter);
@@ -943,7 +1333,7 @@ mod tests {
         type_str(&mut a, "Alice");
         press(&mut a, KeyCode::Enter);
         assert_eq!(a.screen, Screen::User);
-        assert!(!a.errors.is_empty());
+        assert!(a.error_for(Target::Username).is_some());
 
         for _ in 0..5 {
             press(&mut a, KeyCode::Backspace);
@@ -954,7 +1344,9 @@ mod tests {
         press(&mut a, KeyCode::Tab);
         type_str(&mut a, "two");
         press(&mut a, KeyCode::Enter);
-        assert!(a.errors.iter().any(|e| e.contains("do not match")));
+        assert!(a
+            .error_for(Target::PasswordConfirm)
+            .is_some_and(|m| m.contains("doesn't match")));
 
         for _ in 0..3 {
             press(&mut a, KeyCode::Backspace);
@@ -968,7 +1360,7 @@ mod tests {
 
     #[test]
     fn invalid_hostname_is_rejected() {
-        let mut a = app();
+        let mut a = ready();
         to_summary(&mut a);
         press(&mut a, KeyCode::Esc);
         assert_eq!(a.screen, Screen::Hostname);
@@ -978,21 +1370,22 @@ mod tests {
         type_str(&mut a, "-bad");
         press(&mut a, KeyCode::Enter);
         assert_eq!(a.screen, Screen::Hostname);
-        assert!(!a.errors.is_empty());
+        assert!(a.error_for(Target::Hostname).is_some());
     }
 
     #[test]
     fn install_needs_the_disk_name_typed_and_yields_a_plan() {
-        let mut a = app();
+        let mut a = ready();
         to_summary(&mut a);
         assert_eq!(a.confirm_word(), "vda");
-        let wrong = press(&mut a, KeyCode::Enter);
-        assert!(matches!(wrong, Effect::None));
+        assert!(press(&mut a, KeyCode::Enter).is_empty());
         assert_eq!(a.screen, Screen::Summary);
+        assert!(a.error_for(Target::Confirm).is_some());
 
         type_str(&mut a, "vda");
-        let Effect::Install(plan) = press(&mut a, KeyCode::Enter) else {
-            panic!("expected install");
+        let fx = press(&mut a, KeyCode::Enter);
+        let [Effect::Install(plan)] = &fx[..] else {
+            panic!("expected install, got {fx:?}");
         };
         assert_eq!(a.screen, Screen::Installing);
         assert!(plan
@@ -1008,7 +1401,7 @@ mod tests {
         use std::rc::Rc;
         let ok = Rc::new(Cell::new(true));
         let flag = ok.clone();
-        let mut a = App::new(catalog(), host(), move || {
+        let mut a = App::new(catalog(), host(), false, move || {
             let rejected = if flag.get() {
                 vec![]
             } else {
@@ -1016,26 +1409,28 @@ mod tests {
             };
             vec![disk("vda", rejected)]
         });
+        a.start();
+        a.on_checks(online());
         to_summary(&mut a);
         type_str(&mut a, "vda");
         ok.set(false);
-        assert!(matches!(press(&mut a, KeyCode::Enter), Effect::None));
+        assert!(press(&mut a, KeyCode::Enter).is_empty());
         assert_eq!(a.screen, Screen::Summary);
-        assert!(a.errors[0].contains("no longer available"));
+        assert!(message(&a).contains("no longer available"));
     }
 
     #[test]
     fn ctrl_c_quits_except_while_installing() {
         let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         let mut a = app();
-        assert!(matches!(a.handle_key(ctrl_c), Effect::Quit));
+        assert!(matches!(a.handle_key(ctrl_c)[..], [Effect::Quit]));
         a.screen = Screen::Installing;
-        assert!(matches!(a.handle_key(ctrl_c), Effect::None));
+        assert!(a.handle_key(ctrl_c).is_empty());
     }
 
     #[test]
     fn install_events_drive_progress_and_finish() {
-        let mut a = app();
+        let mut a = ready();
         to_summary(&mut a);
         type_str(&mut a, "vda");
         press(&mut a, KeyCode::Enter);
@@ -1049,7 +1444,7 @@ mod tests {
         a.on_install_event(InstallEvent::Finished(Err("boom".into())));
         assert_eq!(a.screen, Screen::Done);
         assert_eq!(a.install.steps[2].1, StepStatus::Failed);
-        assert!(matches!(press(&mut a, KeyCode::Enter), Effect::Quit));
+        assert!(matches!(press(&mut a, KeyCode::Enter)[..], [Effect::Quit]));
     }
 
     #[test]
@@ -1059,18 +1454,31 @@ mod tests {
         a.install.steps = vec![("x".into(), StepStatus::Running)];
         a.on_install_event(InstallEvent::Finished(Ok(())));
         assert_eq!(a.install.steps[0].1, StepStatus::Done);
-        assert!(matches!(press(&mut a, KeyCode::Enter), Effect::Reboot));
+        assert!(matches!(
+            press(&mut a, KeyCode::Enter)[..],
+            [Effect::Reboot]
+        ));
     }
 
     #[test]
-    fn progress_counts_the_variant_step_only_when_present() {
+    fn keymap_result_becomes_a_notice() {
         let mut a = app();
-        a.screen = Screen::Disk;
-        assert_eq!(a.progress(), Some((4, 8)));
-        a.layout.clear_filter();
-        for c in "switz".chars() {
-            a.layout.push_filter(c);
-        }
-        assert_eq!(a.progress(), Some((5, 9)));
+        a.on_keymap_result(Ok("ch (fr)".into()));
+        assert_eq!(a.notice.as_deref(), Some("Console keyboard set to ch (fr)"));
+        a.on_keymap_result(Err("not a console".into()));
+        assert!(a.notice.as_deref().unwrap().contains("not a console"));
+    }
+
+    #[test]
+    fn step_bar_groups_disk_screens() {
+        assert_eq!(Screen::Disk.bar_index(), Screen::DiskOptions.bar_index());
+        assert_eq!(BAR[Screen::Welcome.bar_index()].0, "Welcome");
+        assert_eq!(BAR[Screen::Summary.bar_index()].0, "Review");
+        assert_eq!(BAR[Screen::Done.bar_index()].0, "Done");
+        let all: Vec<_> = BAR.iter().flat_map(|(_, s)| s.iter().copied()).collect();
+        assert_eq!(
+            all, FLOW,
+            "every screen is in the bar exactly once, in order"
+        );
     }
 }
