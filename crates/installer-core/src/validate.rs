@@ -9,7 +9,6 @@ pub enum Field {
     EncryptionPassword,
     UserName,
     UserPasswordHash,
-    SudoPasswordHash,
     Hostname,
     Locale,
     Timezone,
@@ -63,12 +62,6 @@ pub fn validate(a: &Answers) -> Vec<ValidationError> {
     if let Err(m) = check_password_hash(&a.user.password_hash) {
         errs.push(err(Field::UserPasswordHash, m));
     }
-    if let Err(m) = check_sudo_password(
-        a.user.sudo_same_password,
-        a.user.sudo_password_hash.as_deref(),
-    ) {
-        errs.push(err(Field::SudoPasswordHash, m));
-    }
     if let Err(m) = check_hostname(&a.system.hostname) {
         errs.push(err(Field::Hostname, m));
     }
@@ -100,15 +93,6 @@ fn check_encryption(encrypt: bool, password: Option<&str>) -> Result<(), String>
         )),
         (false, Some(_)) => Err("must not be set when encryption is disabled".into()),
         _ => Ok(()),
-    }
-}
-
-fn check_sudo_password(same: bool, hash: Option<&str>) -> Result<(), String> {
-    match (same, hash) {
-        (false, None) => Err("required when sudo uses a different password".into()),
-        (false, Some(h)) => check_password_hash(h),
-        (true, Some(_)) => Err("must not be set when sudo reuses the user password".into()),
-        (true, None) => Ok(()),
     }
 }
 
@@ -256,8 +240,6 @@ mod tests {
             user: User {
                 name: "alice".into(),
                 password_hash: "$y$j9T$abc$def".into(),
-                sudo_same_password: true,
-                sudo_password_hash: None,
             },
             system: System {
                 hostname: "nun-box".into(),
@@ -323,19 +305,6 @@ mod tests {
         assert!(validate(&a).is_empty());
         a.disk.encrypt = false;
         assert_eq!(fields(&a), [Field::EncryptionPassword]);
-    }
-
-    #[test]
-    fn sudo_password_rules() {
-        let mut a = good();
-        a.user.sudo_same_password = false;
-        assert_eq!(fields(&a), [Field::SudoPasswordHash]);
-        a.user.sudo_password_hash = Some("plain".into());
-        assert_eq!(fields(&a), [Field::SudoPasswordHash]);
-        a.user.sudo_password_hash = Some("$6$salt$hash".into());
-        assert!(validate(&a).is_empty());
-        a.user.sudo_same_password = true;
-        assert_eq!(fields(&a), [Field::SudoPasswordHash]);
     }
 
     #[test]

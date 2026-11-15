@@ -37,18 +37,13 @@ pub enum Filesystem {
     Btrfs,
 }
 
-/// The user is always in `wheel`.
+/// The user is always in `wheel`; sudo uses the user password.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct User {
     pub name: String,
     /// Crypt-style hash (yescrypt, sha512, ...). Plaintext is never stored.
     pub password_hash: String,
-    /// Reuse `password_hash` for sudo. If false, `sudo_password_hash` is required.
-    #[serde(default = "default_true")]
-    pub sudo_same_password: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sudo_password_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,10 +59,6 @@ pub struct System {
     /// XKB variant, e.g. `de` for Swiss German (`ch` + `de`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keyboard_variant: Option<String>,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 #[cfg(test)]
@@ -92,7 +83,6 @@ mod tests {
         assert_eq!(a.disk.filesystem, Filesystem::Ext4);
         assert_eq!(a.disk.swap_size_mib, 0);
         assert!(!a.disk.encrypt);
-        assert!(a.user.sudo_same_password);
         assert_eq!(a.system.keyboard_variant.as_deref(), Some("de"));
     }
 
