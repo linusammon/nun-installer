@@ -60,6 +60,13 @@
             // {
               inherit (c) cargoArtifacts;
               cargoExtraArgs = "-p installer-tui";
+              nativeBuildInputs = [ pkgs.makeWrapper ];
+              postInstall = ''
+                wrapProgram $out/bin/nun-installer \
+                  --set-default NUN_ZONE_TAB ${pkgs.tzdata}/share/zoneinfo/zone.tab \
+                  --set-default NUN_LOCALE_SUPPORTED ${pkgs.glibcLocales}/share/i18n/SUPPORTED \
+                  --set-default NUN_XKB_BASE_LST ${pkgs.xkeyboard-config}/share/X11/xkb/rules/base.lst
+              '';
               meta.mainProgram = "nun-installer";
             }
           );
