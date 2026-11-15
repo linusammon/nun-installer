@@ -2,7 +2,7 @@
 
 TUI installer for the nun stack on NixOS: noctalia, noctalia-greeter and umbriel.
 
-Status: early. The core, headless mode and VM tests work; the TUI is not built yet.
+Status: early. The interactive installer, headless mode and VM tests work.
 
 ## What it does
 
@@ -21,26 +21,25 @@ nun-installer --config answers.json --dry-run   # print the plan and generated f
 nun-installer --config answers.json --yes       # install, wipes the target disk
 ```
 
-Without `--config` the interactive installer starts (not implemented yet).
+Without `--config` the interactive installer starts (it needs a terminal).
 See `crates/installer-tui/tests/fixtures/answers.json` for the answers format.
 
 ## Development
 
 ```sh
-nix develop --impure       # devenv shell with the rust toolchain
+devenv shell             # rust toolchain and dev tools (needs devenv)
 cargo test
-nix flake check --impure   # build, clippy, fmt, tests and the VM tests
+nix flake check         # build, clippy, fmt, tests and the VM tests
 ```
 
-The VM tests (`vm-install-plain`, `vm-install-encrypted`) install onto a blank
-disk inside a NixOS test VM and then boot the result. They need KVM. Run one
+The VM tests (`vm-install-plain`, `vm-install-encrypted`, `vm-install-tui`) install
+onto a blank disk inside a NixOS test VM and then boot the result. The last one
+drives the interactive installer through tmux. They need KVM. Run one
 with:
 
 ```sh
-nix build .#checks.x86_64-linux.vm-install-encrypted --impure -L
+nix build .#checks.x86_64-linux.vm-install-encrypted -L
 ```
-
-`--impure` is needed by the devenv shell.
 
 ## Layout
 
