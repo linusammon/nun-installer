@@ -69,3 +69,55 @@ fn interactive_mode_needs_a_terminal() {
     assert_eq!(out.status.code(), Some(1));
     assert!(text(&out.stderr).contains("needs a terminal"));
 }
+
+#[test]
+fn render_writes_the_generated_files_and_changes_nothing_else() {
+    let answers = fixture("answers.json");
+    let dir = tempfile::TempDir::new().unwrap();
+    let out_dir = dir.path().join("out");
+    let out = Command::new(env!("CARGO_BIN_EXE_nun-installer"))
+        .args(["--config", answers.to_str().unwrap(), "--render"])
+        .arg(&out_dir)
+        .env("NUN_ZONE_TAB", fixture("zone.tab"))
+        .env("NUN_LOCALE_SUPPORTED", fixture("SUPPORTED"))
+        .env("NUN_XKB_BASE_LST", fixture("base.lst"))
+        .env("NUN_STATE_VERSION", "26.05")
+        .env("NUN_BOOT", "uefi")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let disko = std::fs::read_to_string(out_dir.join("disko.nix")).unwrap();
+    assert!(disko.contains("ESP"), "UEFI layout was asked for: {disko}");
+    for name in ["flake.nix", "configuration.nix"] {
+        assert!(out_dir.join(name).is_file(), "{name}");
+    }
+}
+
+#[test]
+fn render_needs_a_config_and_excludes_the_other_modes() {
+    assert_eq!(run(&["--render", "x"]).status.code(), Some(2));
+    let answers = fixture("answers.json");
+    let a = answers.to_str().unwrap();
+    assert_eq!(
+        run(&["--config", a, "--render", "x", "--dry-run"])
+            .status
+            .code(),
+        Some(2)
+    );
+}
+
+#[test]
+fn a_bad_boot_override_is_an_error() {
+    let answers = fixture("answers.json");
+    let out = Command::new(env!("CARGO_BIN_EXE_nun-installer"))
+        .args(["--config", answers.to_str().unwrap(), "--dry-run"])
+        .env("NUN_ZONE_TAB", fixture("zone.tab"))
+        .env("NUN_LOCALE_SUPPORTED", fixture("SUPPORTED"))
+        .env("NUN_XKB_BASE_LST", fixture("base.lst"))
+        .env("NUN_STATE_VERSION", "26.05")
+        .env("NUN_BOOT", "floppy")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(text(&out.stderr).contains("NUN_BOOT"));
+}

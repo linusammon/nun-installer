@@ -42,6 +42,8 @@ pub enum HostError {
     UnsupportedArch(String),
     #[error("NUN_STATE_VERSION is not set (the Nix package sets it to the nixpkgs release)")]
     MissingStateVersion,
+    #[error("NUN_BOOT must be uefi or bios, not {0:?}")]
+    BadBoot(String),
     #[error("cannot use the lock file {path}: {reason}")]
     Lock { path: String, reason: String },
 }
@@ -50,7 +52,9 @@ impl Host {
     /// Detect boot mode and architecture of the running machine. The state
     /// version comes from `NUN_STATE_VERSION`, set by the Nix package. Input
     /// URLs can be overridden with `NUN_NIXPKGS_URL` and `NUN_DISKO_URL` (tests,
-    /// mirrors, offline media).
+    /// mirrors, offline media). `NUN_BOOT` (uefi or bios)
+    /// replaces the detected boot mode, for rendering files somewhere that is not
+    /// the target machine.
     pub fn detect() -> Result<Self, HostError> {
         let system = match std::env::consts::ARCH {
             "x86_64" => "x86_64-linux",
@@ -79,10 +83,16 @@ impl Host {
                 Some(crate::lock::target_lock(&text).map_err(|e| lock_err(e.to_string()))?)
             }
         };
-        let boot = if std::path::Path::new("/sys/firmware/efi").exists() {
-            Boot::Uefi
-        } else {
-            Boot::Bios
+        let boot = match std::env::var("NUN_BOOT")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .as_deref()
+        {
+            Some("uefi") => Boot::Uefi,
+            Some("bios") => Boot::Bios,
+            Some(other) => return Err(HostError::BadBoot(other.into())),
+            None if std::path::Path::new("/sys/firmware/efi").exists() => Boot::Uefi,
+            None => Boot::Bios,
         };
         Ok(Self {
             boot,

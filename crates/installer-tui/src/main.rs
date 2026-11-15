@@ -11,13 +11,14 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-Usage: nun-installer [--config <answers.json> [--dry-run | --yes]]
+Usage: nun-installer [--config <answers.json> [--dry-run | --yes | --render <dir>]]
 
 Without --config the interactive installer starts.
 
   --config <file>  Install headlessly from an answers file
   --dry-run        Print the plan and generated files, change nothing
   --yes            Allow a headless run to wipe the disk
+  --render <dir>  Write the generated files to a directory, change nothing
   -h, --help       Show this help
   -V, --version    Show the version
 ";
@@ -27,6 +28,7 @@ struct Args {
     config: Option<PathBuf>,
     dry_run: bool,
     yes: bool,
+    render: Option<PathBuf>,
 }
 
 enum Parsed {
@@ -42,6 +44,10 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Parsed {
                 Some(p) => args.config = Some(p.into()),
                 None => return usage_error("--config needs a file"),
             },
+            "--render" => match it.next() {
+                Some(d) => args.render = Some(d.into()),
+                None => return usage_error("--render needs a directory"),
+            },
             "--dry-run" => args.dry_run = true,
             "--yes" => args.yes = true,
             "-h" | "--help" => {
@@ -55,11 +61,12 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Parsed {
             other => return usage_error(&format!("unknown argument '{other}'")),
         }
     }
-    if args.config.is_none() && (args.dry_run || args.yes) {
-        return usage_error("--dry-run and --yes need --config");
+    if args.config.is_none() && (args.dry_run || args.yes || args.render.is_some()) {
+        return usage_error("--dry-run, --yes and --render need --config");
     }
-    if args.dry_run && args.yes {
-        return usage_error("--dry-run and --yes are mutually exclusive");
+    let modes = [args.dry_run, args.yes, args.render.is_some()];
+    if modes.into_iter().filter(|m| *m).count() > 1 {
+        return usage_error("--dry-run, --yes and --render are mutually exclusive");
     }
     Parsed::Run(args)
 }
@@ -97,7 +104,10 @@ fn main() -> ExitCode {
         Parsed::Exit(code) => return code,
     };
     let result = match &args.config {
-        Some(config) => headless::run(config, args.dry_run, args.yes),
+        Some(config) => match &args.render {
+            Some(dir) => headless::render_to(config, dir),
+            None => headless::run(config, args.dry_run, args.yes),
+        },
         None => interactive(),
     };
     match result {

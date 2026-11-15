@@ -7,7 +7,8 @@ use installer_core::{
 use std::io::Write;
 use std::path::Path;
 
-pub fn run(config: &Path, dry_run: bool, yes: bool) -> Result<(), String> {
+/// Read and validate an answers file.
+fn load(config: &Path) -> Result<Answers, String> {
     let text = std::fs::read_to_string(config)
         .map_err(|e| format!("cannot read {}: {e}", config.display()))?;
     let answers: Answers = serde_json::from_str(&text)
@@ -22,6 +23,27 @@ pub fn run(config: &Path, dry_run: bool, yes: bool) -> Result<(), String> {
             .collect();
         return Err(format!("invalid answers:\n{}", list.join("\n")));
     }
+    Ok(answers)
+}
+
+/// Write the generated files into `dir` and change nothing else.
+pub fn render_to(config: &Path, dir: &Path) -> Result<(), String> {
+    let answers = load(config)?;
+    let host = Host::detect().map_err(|e| e.to_string())?;
+    let files = render(&answers, &host).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    for (name, content) in [
+        ("flake.nix", &files.flake_nix),
+        ("configuration.nix", &files.configuration_nix),
+        ("disko.nix", &files.disko_nix),
+    ] {
+        std::fs::write(dir.join(name), content).map_err(|e| format!("cannot write {name}: {e}"))?;
+    }
+    Ok(())
+}
+
+pub fn run(config: &Path, dry_run: bool, yes: bool) -> Result<(), String> {
+    let answers = load(config)?;
 
     if !dry_run && !yes {
         return Err(format!(
