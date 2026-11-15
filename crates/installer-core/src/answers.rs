@@ -1,3 +1,4 @@
+use crate::secret::Secret;
 use serde::{Deserialize, Serialize};
 
 /// Current version of the answers file format.
@@ -24,7 +25,7 @@ pub struct Disk {
     pub encrypt: bool,
     /// LUKS passphrase. Required if and only if `encrypt` is set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub encryption_password: Option<String>,
+    pub encryption_password: Option<Secret>,
 }
 
 /// The user is always in `wheel`; sudo uses the user password.
@@ -34,7 +35,7 @@ pub struct User {
     pub name: String,
     /// Crypt-style hash (yescrypt, sha512, ...). Applied with `chpasswd -e` after
     /// install and never written to the generated config.
-    pub password_hash: String,
+    pub password_hash: Secret,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

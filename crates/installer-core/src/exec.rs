@@ -145,7 +145,8 @@ fn remove(path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan::{Content, Secret};
+    use crate::plan::Content;
+    use crate::secret::Secret;
 
     #[derive(Default)]
     struct Recorder {

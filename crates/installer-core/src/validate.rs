@@ -1,5 +1,6 @@
 use crate::answers::{Answers, SCHEMA_VERSION};
 use crate::catalog::Catalog;
+use crate::secret::Secret;
 
 /// Which answer a validation error belongs to, so the TUI can show it per field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,13 +55,16 @@ pub fn validate(a: &Answers, catalog: &Catalog) -> Vec<ValidationError> {
             format!("must be at most {MAX_SWAP_MIB} MiB"),
         ));
     }
-    if let Err(m) = check_encryption(a.disk.encrypt, a.disk.encryption_password.as_deref()) {
+    if let Err(m) = check_encryption(
+        a.disk.encrypt,
+        a.disk.encryption_password.as_ref().map(Secret::expose),
+    ) {
         errs.push(err(Field::EncryptionPassword, m));
     }
     if let Err(m) = check_username(&a.user.name) {
         errs.push(err(Field::UserName, m));
     }
-    if let Err(m) = check_password_hash(&a.user.password_hash) {
+    if let Err(m) = check_password_hash(a.user.password_hash.expose()) {
         errs.push(err(Field::UserPasswordHash, m));
     }
     if let Err(m) = check_hostname(&a.system.hostname) {

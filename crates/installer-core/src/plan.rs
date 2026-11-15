@@ -4,6 +4,7 @@
 
 use crate::answers::Answers;
 use crate::generate::{GeneratedFiles, LUKS_PASSWORD_PATH};
+use crate::secret::Secret;
 use std::fmt;
 use std::path::PathBuf;
 
@@ -12,32 +13,6 @@ pub const MOUNT_ROOT: &str = "/mnt";
 pub const CONFIG_DIR: &str = "/mnt/etc/nixos";
 /// Where the generated files are staged so disko can run before `/mnt` exists.
 pub const STAGING_DIR: &str = "/tmp/nun-installer";
-
-/// A string that never shows up in `Debug` or `Display` output.
-#[derive(Clone, PartialEq, Eq)]
-pub struct Secret(String);
-
-impl Secret {
-    pub fn new(s: impl Into<String>) -> Self {
-        Self(s.into())
-    }
-
-    pub fn expose(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Debug for Secret {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("<redacted>")
-    }
-}
-
-impl fmt::Display for Secret {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("<redacted>")
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Command {
@@ -158,12 +133,16 @@ pub fn build_plan(a: &Answers, files: &GeneratedFiles) -> Plan {
     let staged_disko = format!("{STAGING_DIR}/disko.nix");
 
     if a.disk.encrypt {
-        let password = a.disk.encryption_password.clone().unwrap_or_default();
+        let password = a
+            .disk
+            .encryption_password
+            .clone()
+            .unwrap_or_else(|| Secret::new(""));
         actions.push(action(
             "Stage LUKS passphrase for disko",
             ActionKind::WriteFile {
                 path: LUKS_PASSWORD_PATH.into(),
-                content: Content::Secret(Secret::new(password)),
+                content: Content::Secret(password),
                 mode: 0o600,
             },
         ));
@@ -243,7 +222,11 @@ pub fn build_plan(a: &Answers, files: &GeneratedFiles) -> Plan {
         &format!("Set password for {}", a.user.name),
         ActionKind::Run(
             Command::new("nixos-enter", ["--root", MOUNT_ROOT, "-c", "chpasswd -e"]).with_stdin(
-                Secret::new(format!("{}:{}\n", a.user.name, a.user.password_hash)),
+                Secret::new(format!(
+                    "{}:{}\n",
+                    a.user.name,
+                    a.user.password_hash.expose()
+                )),
             ),
         ),
     ));
