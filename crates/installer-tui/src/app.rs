@@ -450,14 +450,20 @@ impl App {
         self.screen = FLOW[self.index().saturating_sub(1)];
     }
 
+    fn go_next(&mut self) {
+        self.screen = FLOW[(self.index() + 1).min(FLOW.len() - 1)];
+    }
+
     /// Move on if this screen's answers are valid, otherwise show why not.
-    fn advance(&mut self, fields: &[Field]) {
+    /// Returns whether it moved.
+    fn advance(&mut self, fields: &[Field]) -> bool {
         let errors = self.errors_for(fields);
         if !errors.is_empty() {
             self.errors = errors;
-            return;
+            return false;
         }
-        self.screen = FLOW[(self.index() + 1).min(FLOW.len() - 1)];
+        self.go_next();
+        true
     }
 
     /// Keep the variant pane in step with the highlighted layout.
@@ -524,16 +530,9 @@ impl App {
 
     fn welcome_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         match key.code {
-            KeyCode::Enter if self.can_continue() => {
-                self.screen = FLOW[(self.index() + 1).min(FLOW.len() - 1)];
-            }
+            KeyCode::Enter if self.can_continue() => self.go_next(),
             KeyCode::Char('r') => {
-                self.disks = (self.rescan)();
-                self.disk_selected = self
-                    .disks
-                    .iter()
-                    .position(DiskInfo::selectable)
-                    .unwrap_or(0);
+                self.rescan_disks();
                 self.checks.running = true;
                 return vec![Effect::RunChecks {
                     internet: !self.offline,
@@ -639,24 +638,24 @@ impl App {
     }
 
     fn confirm_keyboard(&mut self) -> Vec<Effect> {
-        let errors = self.errors_for(&[Field::KeyboardLayout, Field::KeyboardVariant]);
-        if !errors.is_empty() {
-            self.errors = errors;
+        if !self.advance(&[Field::KeyboardLayout, Field::KeyboardVariant]) {
             return Vec::new();
         }
-        self.screen = FLOW[(self.index() + 1).min(FLOW.len() - 1)];
         vec![Effect::ApplyKeymap {
             layout: self.layout_value(),
             variant: self.variant_value(),
         }]
     }
 
+    /// Look at the disks again. The highlighted disk stays highlighted if it is
+    /// still there, whatever its position in the new list; otherwise the first
+    /// usable one is picked.
     fn rescan_disks(&mut self) {
+        let keep = self.selected_disk().map(|d| d.path.clone());
         self.disks = (self.rescan)();
-        self.disk_selected = self
-            .disks
-            .iter()
-            .position(DiskInfo::selectable)
+        self.disk_selected = keep
+            .and_then(|path| self.disks.iter().position(|d| d.path == path))
+            .or_else(|| self.disks.iter().position(DiskInfo::selectable))
             .unwrap_or(0);
     }
 
@@ -917,18 +916,19 @@ impl App {
             );
             return None;
         }
-        // The disk may have been mounted since it was picked.
-        self.disks = (self.rescan)();
-        let path = self.answers().disk.device;
-        let still_ok = self
-            .disks
-            .iter()
-            .find(|d| d.path.to_string_lossy() == path)
-            .is_some_and(DiskInfo::selectable);
+        // The disk may have been mounted, or another one plugged in, since it was
+        // picked. What gets wiped is the disk that was just confirmed, found again
+        // by path, never whatever now sits at the old list position.
+        let confirmed = self.selected_disk().map(|d| d.path.clone());
+        self.rescan_disks();
+        let still_ok = confirmed.is_some()
+            && self.selected_disk().map(|d| &d.path) == confirmed.as_ref()
+            && self.selected_disk().is_some_and(DiskInfo::selectable);
         if !still_ok {
+            let shown = confirmed.map_or_else(|| "the disk".into(), |p| p.display().to_string());
             self.fail(
                 Target::Confirm,
-                format!("{path} is no longer available, go back and choose again"),
+                format!("{shown} is no longer available, go back and choose again"),
             );
             return None;
         }
@@ -1604,6 +1604,67 @@ mod tests {
             "cleanup is not shown as a step"
         );
         assert!(real < plan.actions.len());
+    }
+
+    #[test]
+    fn a_disk_appearing_before_install_cannot_change_what_gets_wiped() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let plugged = Rc::new(Cell::new(false));
+        let flag = plugged.clone();
+        let mut a = App::new(catalog(), host(), false, move || {
+            let mut disks = Vec::new();
+            if flag.get() {
+                // A USB stick: sorts before vda, so index 0 now means a different disk.
+                disks.push(disk("sda", vec![]));
+            }
+            disks.push(disk("vda", vec![]));
+            disks
+        });
+        a.start();
+        a.on_checks(online());
+        to_summary(&mut a);
+        assert_eq!(a.confirm_word(), "vda");
+        type_str(&mut a, "vda");
+
+        plugged.set(true);
+        let fx = press(&mut a, KeyCode::Enter);
+
+        let [Effect::Install(plan)] = &fx[..] else {
+            panic!("expected an install of the confirmed disk, got {fx:?}");
+        };
+        let wiped: Vec<_> = plan
+            .actions
+            .iter()
+            .filter(|x| x.description.starts_with("Partition, format and mount"))
+            .map(|x| x.description.as_str())
+            .collect();
+        assert_eq!(wiped, ["Partition, format and mount /dev/vda"]);
+        assert!(!format!("{plan:?}").contains("/dev/sda"));
+    }
+
+    #[test]
+    fn install_refuses_if_the_confirmed_disk_is_gone_even_if_another_one_remains() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let unplugged = Rc::new(Cell::new(false));
+        let flag = unplugged.clone();
+        let mut a = App::new(catalog(), host(), false, move || {
+            if flag.get() {
+                vec![disk("sda", vec![])]
+            } else {
+                vec![disk("vda", vec![])]
+            }
+        });
+        a.start();
+        a.on_checks(online());
+        to_summary(&mut a);
+        type_str(&mut a, "vda");
+
+        unplugged.set(true);
+        assert!(press(&mut a, KeyCode::Enter).is_empty());
+        assert_eq!(a.screen, Screen::Summary);
+        assert!(message(&a).contains("/dev/vda is no longer available"));
     }
 
     #[test]

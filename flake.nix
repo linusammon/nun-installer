@@ -149,6 +149,16 @@
             nixpkgsRev = nixpkgs.rev;
             pinned = true;
           };
+          vm-install-tui-user = import ./nix/tests/install.nix {
+            inherit pkgs;
+            inherit (self.packages.${system}) installer;
+            inherit disko;
+            nixpkgsSrc = nixpkgs.outPath;
+            nixpkgsNarHash = nixpkgs.narHash;
+            nixpkgsRev = nixpkgs.rev;
+            tui = true;
+            asUser = true;
+          };
           vm-install-tui = import ./nix/tests/install.nix {
             inherit pkgs;
             inherit (self.packages.${system}) installer;

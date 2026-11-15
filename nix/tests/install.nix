@@ -13,6 +13,9 @@
   # Use the default (GitHub) input URLs and rely on the pinned lock plus the
   # sources already in the store, as an offline install would.
   pinned ? false,
+  # Start the installer as the unprivileged `nixos` user of the official ISO, so it has
+  # to escalate through sudo.
+  asUser ? false,
 }:
 let
   inherit (pkgs) lib;
@@ -175,7 +178,7 @@ let
   targetBuild = target.config.system.build;
 in
 pkgs.testers.runNixOSTest {
-  name = "nun-installer-${if pinned then "pinned-" else ""}${if tui then "tui-" else ""}${if encrypt then "encrypted" else "plain"}";
+  name = "nun-installer-${if asUser then "user-" else ""}${if pinned then "pinned-" else ""}${if tui then "tui-" else ""}${if encrypt then "encrypted" else "plain"}";
 
   passthru = { inherit target; };
 
@@ -185,6 +188,16 @@ pkgs.testers.runNixOSTest {
   nodes.installer =
     { ... }:
     {
+      # What the official ISO gives you: an unprivileged `nixos` user with passwordless
+      # sudo. (The ISO profile itself conflicts with the test framework's read-only
+      # nixpkgs.)
+      users.users.nixos = lib.mkIf asUser {
+        isNormalUser = true;
+        extraGroups = [ "wheel" ];
+        initialHashedPassword = "";
+      };
+      security.sudo.wheelNeedsPassword = lib.mkIf asUser false;
+
       virtualisation = {
         # Builds and evaluates inside the VM, so it needs room.
         cores = 8;
@@ -289,6 +302,8 @@ pkgs.testers.runNixOSTest {
   testScript = ''
     encrypted = ${if encrypt then "True" else "False"}
     tui = ${if tui then "True" else "False"}
+    pinned = ${if pinned then "True" else "False"}
+    as_user = ${if asUser then "True" else "False"}
 
     def send(*keys):
         installer.succeed("tmux send-keys -t nun " + " ".join(keys))
@@ -310,8 +325,15 @@ pkgs.testers.runNixOSTest {
     if tui:
         with subtest("interactive install"):
             # No network in the VM, so say the install medium carries everything.
-            installer.succeed("tmux new-session -d -x 120 -y 40 -s nun 'NUN_OFFLINE=1 ${env} nun-installer'")
+            if as_user:
+                # Like `nix run` on the official ISO: unprivileged, escalating via sudo.
+                installer.succeed("tmux new-session -d -x 120 -y 40 -s nun \"su nixos -c 'NUN_OFFLINE=1 ${env} ${installer}/bin/nun-installer'\"")
+            else:
+                installer.succeed("tmux new-session -d -x 120 -y 40 -s nun 'NUN_OFFLINE=1 ${env} nun-installer'")
             wait_for("Press Enter to continue.")
+            if as_user:
+                installer.succeed("ps -eo ruser,args | grep -E '^nixos +sudo env '")
+                installer.succeed("ps -eo user,args | grep -E '^root +\\S*nun-installer'")
             send("Enter")
 
             # The keyboard comes first, so the searches below use the chosen layout.
@@ -377,8 +399,6 @@ pkgs.testers.runNixOSTest {
 
         with subtest("install"):
             installer.succeed("${env} nun-installer --config ${answersFile} --yes >&2")
-
-    pinned = ${if pinned then "True" else "False"}
 
     with subtest("generated config is in place"):
         for f in ["flake.nix", "configuration.nix", "disko.nix", "hardware-configuration.nix"]:
