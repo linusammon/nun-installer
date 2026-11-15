@@ -33,6 +33,12 @@ pub fn on_ac_power(power_supply: &Path) -> Option<bool> {
     let mut mains_online = false;
     for entry in fs::read_dir(power_supply).ok()?.flatten() {
         let dir = entry.path();
+        // Wireless mice and keyboards show up as batteries with scope "Device";
+        // they say nothing about the machine's own power.
+        let scope = fs::read_to_string(dir.join("scope")).unwrap_or_default();
+        if scope.trim() == "Device" {
+            continue;
+        }
         let kind = fs::read_to_string(dir.join("type")).unwrap_or_default();
         match kind.trim() {
             "Battery" => has_battery = true,
@@ -95,6 +101,16 @@ mod tests {
         let got = on_ac_power(&r);
         fs::remove_dir_all(&r).unwrap();
         assert_eq!(got, Some(true));
+    }
+
+    #[test]
+    fn peripheral_batteries_are_ignored() {
+        let r = root("periph");
+        supply(&r, "hidpp_battery_0", "Battery", None);
+        fs::write(r.join("hidpp_battery_0/scope"), "Device\n").unwrap();
+        let got = on_ac_power(&r);
+        fs::remove_dir_all(&r).unwrap();
+        assert_eq!(got, None, "a mouse battery is not the machine's battery");
     }
 
     #[test]
