@@ -2,6 +2,7 @@
 
 pub mod answers;
 pub mod catalog;
+pub mod disks;
 pub mod exec;
 pub mod generate;
 pub mod password;
@@ -12,6 +13,7 @@ pub mod validate;
 
 pub use answers::{Answers, Disk, System, User, SCHEMA_VERSION};
 pub use catalog::{Catalog, CatalogError, CatalogPaths, Layout, Variant};
+pub use disks::{human_size, list_disks, DiskInfo};
 pub use exec::{run_plan, DryRun, ExecError, Executor, Live};
 pub use generate::{
     render, Boot, GeneratedFiles, Host, RenderError, LUKS_PASSWORD_PATH, NIXPKGS_URL,
