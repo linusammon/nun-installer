@@ -1,6 +1,7 @@
 mod app;
 mod headless;
 mod install;
+mod privilege;
 mod tui;
 mod ui;
 mod widgets;
@@ -77,6 +78,8 @@ fn interactive() -> Result<(), String> {
     }
     let catalog = Catalog::load(&CatalogPaths::from_env()).map_err(|e| e.to_string())?;
     let host = Host::detect().map_err(|e| e.to_string())?;
+    // After the terminal and data checks, so mistakes fail before a sudo prompt.
+    privilege::require_root();
     tui::run(catalog, host).map_err(|e| e.to_string())
 }
 

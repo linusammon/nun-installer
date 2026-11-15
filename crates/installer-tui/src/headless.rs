@@ -29,6 +29,10 @@ pub fn run(config: &Path, dry_run: bool, yes: bool) -> Result<(), String> {
             answers.disk.device
         ));
     }
+    if !dry_run {
+        // After the cheap checks above, so mistakes fail before a sudo prompt.
+        crate::privilege::require_root();
+    }
 
     let problems = check_disk(&answers.disk.device);
     if dry_run {
