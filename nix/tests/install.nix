@@ -8,6 +8,7 @@
   nixpkgsSrc,
   nixpkgsNarHash,
   encrypt ? false,
+  tui ? false,
 }:
 let
   inherit (pkgs) lib;
@@ -165,7 +166,7 @@ let
   targetBuild = target.config.system.build;
 in
 pkgs.testers.runNixOSTest {
-  name = "nun-installer-${if encrypt then "encrypted" else "plain"}";
+  name = "nun-installer-${if tui then "tui-" else ""}${if encrypt then "encrypted" else "plain"}";
 
   passthru = { inherit target; };
 
@@ -205,6 +206,7 @@ pkgs.testers.runNixOSTest {
         installer
         disko.packages.${system}.disko
         pkgs.cryptsetup
+        pkgs.tmux
       ];
 
       # No network: everything nixos-install and disko build must already be here.
@@ -273,6 +275,16 @@ pkgs.testers.runNixOSTest {
 
   testScript = ''
     encrypted = ${if encrypt then "True" else "False"}
+    tui = ${if tui then "True" else "False"}
+
+    def send(*keys):
+        installer.succeed("tmux send-keys -t nun " + " ".join(keys))
+
+    def type_text(text):
+        installer.succeed(f"tmux send-keys -t nun -l '{text}'")
+
+    def wait_for(text):
+        installer.wait_until_succeeds(f"tmux capture-pane -pt nun | grep -qF '{text}'", timeout=300)
 
     installer.start()
     installer.wait_for_unit("multi-user.target")
@@ -280,15 +292,70 @@ pkgs.testers.runNixOSTest {
     installer.succeed("test -d /sys/firmware/efi")
     installer.succeed("lsblk >&2")
 
-    with subtest("dry run touches nothing"):
-        installer.succeed("${env} nun-installer --config ${answersFile} --dry-run >&2")
-        installer.fail("test -e /mnt/etc")
+    if tui:
+        with subtest("interactive install"):
+            installer.succeed("tmux new-session -d -x 120 -y 40 -s nun '${env} nun-installer'")
+            wait_for("Welcome")
+            send("Enter")
 
-    with subtest("refuses to wipe without --yes"):
-        installer.fail("${env} nun-installer --config ${answersFile}")
+            wait_for("Timezone")
+            type_text("Europe/Berlin")
+            send("Enter")
 
-    with subtest("install"):
-        installer.succeed("${env} nun-installer --config ${answersFile} --yes >&2")
+            wait_for("Language")
+            send("Enter")
+
+            wait_for("Keyboard layout")
+            type_text("switzerland")
+            send("Enter")
+
+            wait_for("Keyboard variant")
+            type_text("french")
+            send("Enter")
+
+            wait_for("Choose the disk")
+            installer.succeed("tmux capture-pane -pt nun | grep -q 'unavailable'")  # the installer's own disk
+            send("Enter")
+
+            wait_for("Swap size")
+            send("BSpace BSpace BSpace BSpace")
+            type_text("512")
+            if encrypted:
+                send("Tab", "Space", "Tab")
+                type_text("${encryptionPassword}")
+                send("Tab")
+                type_text("${encryptionPassword}")
+            send("Enter")
+
+            wait_for("User account")
+            type_text("alice")
+            send("Tab")
+            type_text("hunter2hunter2")
+            send("Tab")
+            type_text("hunter2hunter2")
+            send("Enter")
+
+            wait_for("Hostname")
+            send("BSpace BSpace BSpace")
+            type_text("nun-test")
+            send("Enter")
+
+            wait_for("EVERYTHING ON /dev/vda WILL BE ERASED")
+            type_text("vda")
+            send("Enter")
+
+            wait_for("Installation finished")
+            send("q")
+    else:
+        with subtest("dry run touches nothing"):
+            installer.succeed("${env} nun-installer --config ${answersFile} --dry-run >&2")
+            installer.fail("test -e /mnt/etc")
+
+        with subtest("refuses to wipe without --yes"):
+            installer.fail("${env} nun-installer --config ${answersFile}")
+
+        with subtest("install"):
+            installer.succeed("${env} nun-installer --config ${answersFile} --yes >&2")
 
     with subtest("generated config is in place"):
         for f in ["flake.nix", "configuration.nix", "disko.nix", "hardware-configuration.nix"]:
@@ -296,8 +363,8 @@ pkgs.testers.runNixOSTest {
         installer.succeed("grep -q 'programs.umbriel.enable = true' /mnt/etc/nixos/configuration.nix")
 
     with subtest("password is set but not in the config"):
-        installer.succeed("grep -q '^alice:\\$6\\$' /mnt/etc/shadow")
-        installer.fail("grep -rq 'nunsalt1' /mnt/etc/nixos")
+        installer.succeed("grep -Eq '^alice:[$][y6][$]' /mnt/etc/shadow")
+        installer.fail("grep -rqE '[$][y6][$]' /mnt/etc/nixos")
         installer.succeed("nixos-enter --root /mnt -c 'id -nG alice' | grep -qw wheel")
 
     with subtest("secrets are cleaned up"):
@@ -339,7 +406,7 @@ pkgs.testers.runNixOSTest {
     with subtest("installed system is what we asked for"):
         target.succeed("hostname | grep -qx nun-test")
         target.succeed("id -nG alice | grep -qw wheel")
-        target.succeed("grep -q 'nunsalt1.Hb.bACmNA' /etc/shadow")
+        target.succeed("su alice -c 'echo hunter2hunter2 | sudo -S -k true'")
         target.succeed("findmnt -no FSTYPE / | grep -qx btrfs")
         target.succeed("swapon --show=NAME --noheadings | grep -q swap")
         target.succeed("timedatectl show -p Timezone --value | grep -qx Europe/Berlin")

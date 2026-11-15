@@ -345,6 +345,7 @@ dependencies = [
  "installer-core",
  "ratatui",
  "serde_json",
+ "zeroize",
 ]
 
 [[package]]
