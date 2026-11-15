@@ -332,6 +332,7 @@ dependencies = [
  "minijinja",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "yescrypt",
  "zeroize",
@@ -346,6 +347,7 @@ dependencies = [
  "ratatui",
  "rustix 1.1.6",
  "serde_json",
+ "tempfile",
  "zeroize",
 ]
 

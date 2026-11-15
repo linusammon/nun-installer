@@ -175,37 +175,13 @@ mod tests {
     use crate::answers::*;
 
     fn answers() -> Answers {
-        Answers {
-            schema_version: SCHEMA_VERSION,
-            disk: Disk {
-                device: "/dev/nvme0n1".into(),
-                swap_size_mib: 0,
-                encrypt: false,
-                encryption_password: None,
-            },
-            user: User {
-                name: "alice".into(),
-                password_hash: "$y$j9T$abc$def".into(),
-            },
-            system: System {
-                hostname: "nun-box".into(),
-                locale: "en_US.UTF-8".into(),
-                timezone: "Europe/Berlin".into(),
-                keyboard_layout: "ch".into(),
-                keyboard_variant: Some("fr".into()),
-            },
-        }
+        Answers::example()
     }
 
     fn host(boot: Boot) -> Host {
         Host {
             boot,
-            system: "x86_64-linux".into(),
-            state_version: "26.05".into(),
-            nixpkgs_url: NIXPKGS_URL.into(),
-            disko_url: DISKO_URL.into(),
-            nixpkgs_path: None,
-            pinned_lock: None,
+            ..Host::example()
         }
     }
 

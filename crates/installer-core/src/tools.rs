@@ -39,12 +39,7 @@ pub fn missing_tools() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn dir(tag: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("nun-tools-{tag}-{}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
-        d
-    }
+    use tempfile::TempDir;
 
     fn make(d: &Path, name: &str, mode: u32) {
         let p = d.join(name);
@@ -54,25 +49,23 @@ mod tests {
 
     #[test]
     fn reports_only_what_is_missing() {
-        let a = dir("a");
-        let b = dir("b");
-        make(&a, "disko", 0o755);
-        make(&a, "nix", 0o755);
-        make(&b, "nixos-install", 0o755);
-        let path = std::env::join_paths([&a, &b]).unwrap();
-        let missing = missing_tools_in(&path);
-        std::fs::remove_dir_all(&a).unwrap();
-        std::fs::remove_dir_all(&b).unwrap();
-        assert_eq!(missing, ["nixos-generate-config", "nixos-enter"]);
+        let a = TempDir::new().unwrap();
+        let b = TempDir::new().unwrap();
+        make(a.path(), "disko", 0o755);
+        make(a.path(), "nix", 0o755);
+        make(b.path(), "nixos-install", 0o755);
+        let path = std::env::join_paths([a.path(), b.path()]).unwrap();
+        assert_eq!(
+            missing_tools_in(&path),
+            ["nixos-generate-config", "nixos-enter"]
+        );
     }
 
     #[test]
     fn a_non_executable_file_does_not_count() {
-        let d = dir("noexec");
-        make(&d, "disko", 0o644);
-        let missing = missing_tools_in(d.as_os_str());
-        std::fs::remove_dir_all(&d).unwrap();
-        assert!(missing.contains(&"disko".to_owned()));
+        let d = TempDir::new().unwrap();
+        make(d.path(), "disko", 0o644);
+        assert!(missing_tools_in(d.path().as_os_str()).contains(&"disko".to_owned()));
     }
 
     #[test]

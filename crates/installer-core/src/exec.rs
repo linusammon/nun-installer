@@ -335,7 +335,8 @@ mod tests {
 
     #[test]
     fn system_executor_writes_and_removes() {
-        let dir = std::env::temp_dir().join(format!("nun-exec-test-{}", std::process::id()));
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().join("work");
         let file = dir.join("sub/f.txt");
         let write = Action {
             description: "w".into(),
@@ -430,9 +431,8 @@ mod tests {
 
     #[test]
     fn secret_files_are_private_even_if_they_existed() {
-        let dir = std::env::temp_dir().join(format!("nun-mode-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("s");
+        let tmp = tempfile::TempDir::new().unwrap();
+        let file = tmp.path().join("s");
         std::fs::write(&file, "old").unwrap();
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
         let a = Action {
@@ -446,13 +446,13 @@ mod tests {
         };
         live().execute(&a).unwrap();
         let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
-        std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(mode, 0o600);
     }
 
     #[test]
     fn create_dir_sets_mode() {
-        let dir = std::env::temp_dir().join(format!("nun-dir-test-{}", std::process::id()));
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().join("private");
         let a = Action {
             description: "d".into(),
             kind: ActionKind::CreateDir {
@@ -463,7 +463,6 @@ mod tests {
         };
         live().execute(&a).unwrap();
         let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
-        std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(mode, 0o700);
     }
 

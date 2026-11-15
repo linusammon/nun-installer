@@ -198,33 +198,13 @@ fn check_hostname(h: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::answers::*;
-    use crate::catalog::test_catalog;
 
     fn good() -> Answers {
-        Answers {
-            schema_version: SCHEMA_VERSION,
-            disk: Disk {
-                device: "/dev/nvme0n1".into(),
-                swap_size_mib: 4096,
-                encrypt: false,
-                encryption_password: None,
-            },
-            user: User {
-                name: "alice".into(),
-                password_hash: "$y$j9T$abc$def".into(),
-            },
-            system: System {
-                hostname: "nun-box".into(),
-                locale: "en_US.UTF-8".into(),
-                timezone: "Europe/Berlin".into(),
-                keyboard_layout: "ch".into(),
-                keyboard_variant: Some("fr".into()),
-            },
-        }
+        Answers::example()
     }
 
     fn fields(a: &Answers) -> Vec<Field> {
-        validate(a, &test_catalog())
+        validate(a, &Catalog::example())
             .into_iter()
             .map(|e| e.field)
             .collect()
@@ -244,7 +224,7 @@ mod tests {
 
     #[test]
     fn good_answers_pass() {
-        assert!(validate(&good(), &test_catalog()).is_empty());
+        assert!(validate(&good(), &Catalog::example()).is_empty());
     }
 
     #[test]
@@ -289,7 +269,7 @@ mod tests {
         a.disk.encryption_password = Some("short".into());
         assert_eq!(fields(&a), [Field::EncryptionPassword]);
         a.disk.encryption_password = Some("long-enough-pass".into());
-        assert!(validate(&a, &test_catalog()).is_empty());
+        assert!(validate(&a, &Catalog::example()).is_empty());
         a.disk.encrypt = false;
         assert_eq!(fields(&a), [Field::EncryptionPassword]);
     }
@@ -298,7 +278,7 @@ mod tests {
     fn swap_size_limit() {
         let mut a = good();
         a.disk.swap_size_mib = 0;
-        assert!(validate(&a, &test_catalog()).is_empty());
+        assert!(validate(&a, &Catalog::example()).is_empty());
         a.disk.swap_size_mib = u32::MAX;
         assert_eq!(fields(&a), [Field::SwapSize]);
     }
@@ -307,7 +287,7 @@ mod tests {
     fn keyboard_variant() {
         let mut a = good();
         a.system.keyboard_variant = None;
-        assert!(validate(&a, &test_catalog()).is_empty());
+        assert!(validate(&a, &Catalog::example()).is_empty());
         for v in ["", "de", "intl"] {
             a.system.keyboard_variant = Some(v.into());
             assert_eq!(fields(&a), [Field::KeyboardVariant], "{v}");
@@ -344,7 +324,7 @@ mod tests {
             let mut a = good();
             a.system.hostname = h.into();
             assert!(
-                validate(&a, &test_catalog()).is_empty(),
+                validate(&a, &Catalog::example()).is_empty(),
                 "{h:?} should be accepted"
             );
         }
@@ -368,7 +348,7 @@ mod tests {
         }
         let mut a = good();
         a.system.timezone = "UTC".into();
-        assert!(validate(&a, &test_catalog()).is_empty());
+        assert!(validate(&a, &Catalog::example()).is_empty());
     }
 
     #[test]

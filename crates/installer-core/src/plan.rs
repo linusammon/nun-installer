@@ -324,40 +324,24 @@ impl fmt::Display for Plan {
 mod tests {
     use super::*;
     use crate::answers::*;
-    use crate::generate::{render, Boot, Host};
+    use crate::generate::{render, Host};
 
     fn answers(encrypt: bool) -> Answers {
-        Answers {
-            schema_version: SCHEMA_VERSION,
-            disk: Disk {
-                device: "/dev/vda".into(),
-                swap_size_mib: 2048,
-                encrypt,
-                encryption_password: encrypt.then(|| "correct horse battery".into()),
-            },
-            user: User {
-                name: "alice".into(),
-                password_hash: "$y$j9T$abc$def".into(),
-            },
-            system: System {
-                hostname: "nun".into(),
-                locale: "en_US.UTF-8".into(),
-                timezone: "Europe/Berlin".into(),
-                keyboard_layout: "us".into(),
-                keyboard_variant: None,
-            },
-        }
+        let mut a = Answers::example();
+        a.disk.device = "/dev/vda".into();
+        a.disk.swap_size_mib = 2048;
+        a.disk.encrypt = encrypt;
+        a.disk.encryption_password = encrypt.then(|| "correct horse battery".into());
+        a.system.hostname = "nun".into();
+        a.system.keyboard_layout = "us".into();
+        a.system.keyboard_variant = None;
+        a
     }
 
     fn plan_for(a: &Answers) -> Plan {
         let host = Host {
-            boot: Boot::Uefi,
-            system: "x86_64-linux".into(),
-            state_version: "26.05".into(),
-            nixpkgs_url: crate::generate::NIXPKGS_URL.into(),
-            disko_url: crate::generate::DISKO_URL.into(),
             nixpkgs_path: Some("/nix/store/fake-nixpkgs".into()),
-            pinned_lock: None,
+            ..Host::example()
         };
         build_plan(a, &render(a, &host).unwrap(), &host).unwrap()
     }
@@ -409,15 +393,7 @@ mod tests {
     fn encryption_without_a_passphrase_is_an_error_not_an_empty_passphrase() {
         let mut a = answers(true);
         a.disk.encryption_password = None;
-        let host = Host {
-            boot: Boot::Uefi,
-            system: "x86_64-linux".into(),
-            state_version: "26.05".into(),
-            nixpkgs_url: NIXPKGS_URL.into(),
-            disko_url: DISKO_URL.into(),
-            nixpkgs_path: None,
-            pinned_lock: None,
-        };
+        let host = Host::example();
         let files = render(&a, &host).unwrap();
         assert_eq!(
             build_plan(&a, &files, &host).unwrap_err(),
@@ -438,13 +414,8 @@ mod tests {
     fn pinned_plan(mutate: impl FnOnce(&mut Host)) -> Plan {
         let a = answers(false);
         let mut host = Host {
-            boot: Boot::Uefi,
-            system: "x86_64-linux".into(),
-            state_version: "26.05".into(),
-            nixpkgs_url: NIXPKGS_URL.into(),
-            disko_url: DISKO_URL.into(),
-            nixpkgs_path: None,
             pinned_lock: Some("{\"pinned\": true}\n".into()),
+            ..Host::example()
         };
         mutate(&mut host);
         build_plan(&a, &render(&a, &host).unwrap(), &host).unwrap()

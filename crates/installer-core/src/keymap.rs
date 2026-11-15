@@ -118,15 +118,16 @@ mod tests {
         apply_console_keymap(tools, layout, variant)
     }
 
-    fn tmp(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("nun-keymap-{tag}-{}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    /// A scratch directory, removed when the guard is dropped, panic or not.
+    fn tmp() -> (tempfile::TempDir, PathBuf) {
+        let guard = tempfile::TempDir::new().unwrap();
+        let path = guard.path().to_path_buf();
+        (guard, path)
     }
 
     #[test]
     fn pipes_ckbcomp_output_into_loadkeys() {
-        let d = tmp("ok");
+        let (_guard, d) = tmp();
         let ckbcomp = script(&d, "ckbcomp", "echo \"ARGS: $*\"");
         let loadkeys = script(
             &d,
@@ -140,14 +141,13 @@ mod tests {
         };
         apply(&tools, "ch", Some("fr")).unwrap();
         let got = std::fs::read_to_string(d.join("lk")).unwrap();
-        std::fs::remove_dir_all(&d).unwrap();
         assert!(got.contains("LK: -u -q -"));
         assert!(got.contains("ARGS: -I/xkb -layout ch -variant fr"));
     }
 
     #[test]
     fn omits_variant_and_xkb_dir_when_unset() {
-        let d = tmp("plain");
+        let (_guard, d) = tmp();
         let ckbcomp = script(&d, "ckbcomp", "echo \"ARGS: $*\"");
         let loadkeys = script(&d, "loadkeys", &format!("cat > {}/lk", d.display()));
         let tools = KeymapTools {
@@ -157,13 +157,12 @@ mod tests {
         };
         apply(&tools, "us", None).unwrap();
         let got = std::fs::read_to_string(d.join("lk")).unwrap();
-        std::fs::remove_dir_all(&d).unwrap();
         assert_eq!(got.trim(), "ARGS: -layout us");
     }
 
     #[test]
     fn loadkeys_failure_carries_its_message() {
-        let d = tmp("fail");
+        let (_guard, d) = tmp();
         let ckbcomp = script(&d, "ckbcomp", "echo map");
         let loadkeys = script(
             &d,
@@ -176,13 +175,12 @@ mod tests {
             xkb_dir: None,
         };
         let err = apply(&tools, "us", None).unwrap_err();
-        std::fs::remove_dir_all(&d).unwrap();
         assert!(err.to_string().contains("not a console"), "{err}");
     }
 
     #[test]
     fn ckbcomp_failure_stops_before_loadkeys() {
-        let d = tmp("ckb");
+        let (_guard, d) = tmp();
         let ckbcomp = script(&d, "ckbcomp", "echo 'unknown layout' >&2; exit 2");
         let loadkeys = script(&d, "loadkeys", &format!("touch {}/ran", d.display()));
         let tools = KeymapTools {
@@ -192,7 +190,6 @@ mod tests {
         };
         let err = apply(&tools, "xx", None).unwrap_err();
         let ran = d.join("ran").exists();
-        std::fs::remove_dir_all(&d).unwrap();
         assert!(err.to_string().contains("unknown layout"));
         assert!(!ran);
     }

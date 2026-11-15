@@ -59,6 +59,7 @@ pub fn system_on_ac_power() -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn flags_implausible_clocks_only() {
@@ -77,49 +78,39 @@ mod tests {
         }
     }
 
-    fn root(tag: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("nun-ps-{tag}-{}", std::process::id()));
-        fs::create_dir_all(&d).unwrap();
-        d
-    }
-
     #[test]
     fn battery_with_mains_unplugged_is_on_battery() {
-        let r = root("batt");
-        supply(&r, "BAT0", "Battery", None);
-        supply(&r, "AC", "Mains", Some("0"));
-        let got = on_ac_power(&r);
-        fs::remove_dir_all(&r).unwrap();
-        assert_eq!(got, Some(false));
+        let r = TempDir::new().unwrap();
+        supply(r.path(), "BAT0", "Battery", None);
+        supply(r.path(), "AC", "Mains", Some("0"));
+        assert_eq!(on_ac_power(r.path()), Some(false));
     }
 
     #[test]
     fn battery_with_mains_plugged_is_on_ac_whatever_the_order() {
-        let r = root("ac");
-        supply(&r, "AC", "Mains", Some("1"));
-        supply(&r, "BAT0", "Battery", None);
-        let got = on_ac_power(&r);
-        fs::remove_dir_all(&r).unwrap();
-        assert_eq!(got, Some(true));
+        let r = TempDir::new().unwrap();
+        supply(r.path(), "AC", "Mains", Some("1"));
+        supply(r.path(), "BAT0", "Battery", None);
+        assert_eq!(on_ac_power(r.path()), Some(true));
     }
 
     #[test]
     fn peripheral_batteries_are_ignored() {
-        let r = root("periph");
-        supply(&r, "hidpp_battery_0", "Battery", None);
-        fs::write(r.join("hidpp_battery_0/scope"), "Device\n").unwrap();
-        let got = on_ac_power(&r);
-        fs::remove_dir_all(&r).unwrap();
-        assert_eq!(got, None, "a mouse battery is not the machine's battery");
+        let r = TempDir::new().unwrap();
+        supply(r.path(), "hidpp_battery_0", "Battery", None);
+        fs::write(r.path().join("hidpp_battery_0/scope"), "Device\n").unwrap();
+        assert_eq!(
+            on_ac_power(r.path()),
+            None,
+            "a mouse battery is not the machine's battery"
+        );
     }
 
     #[test]
     fn no_battery_means_nothing_to_warn_about() {
-        let r = root("none");
-        supply(&r, "AC", "Mains", Some("1"));
-        let got = on_ac_power(&r);
-        fs::remove_dir_all(&r).unwrap();
-        assert_eq!(got, None);
+        let r = TempDir::new().unwrap();
+        supply(r.path(), "AC", "Mains", Some("1"));
+        assert_eq!(on_ac_power(r.path()), None);
         assert_eq!(on_ac_power(Path::new("/definitely/not/here")), None);
     }
 }

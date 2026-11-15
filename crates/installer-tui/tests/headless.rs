@@ -46,15 +46,13 @@ fn live_run_without_yes_is_refused() {
 
 #[test]
 fn invalid_answers_are_reported_per_field() {
-    let dir = std::env::temp_dir().join(format!("nun-cli-test-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let bad = dir.join("bad.json");
+    let dir = tempfile::TempDir::new().unwrap();
+    let bad = dir.path().join("bad.json");
     let json = std::fs::read_to_string(fixture("answers.json"))
         .unwrap()
         .replace("Europe/Berlin", "Europe/Atlantis");
     std::fs::write(&bad, json).unwrap();
     let out = run(&["--config", bad.to_str().unwrap(), "--dry-run"]);
-    std::fs::remove_dir_all(&dir).unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(text(&out.stderr).contains("timezone"));
 }

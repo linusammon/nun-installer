@@ -102,8 +102,8 @@ mod tests {
 
     #[test]
     fn scans_real_disks_and_skips_virtual_ones() {
-        let root = std::env::temp_dir().join(format!("nun-sys-test-{}", std::process::id()));
-        fs::create_dir_all(&root).unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
         fake_sys(
             &root,
             "nvme0n1",
@@ -119,7 +119,6 @@ mod tests {
         fake_sys(&root, "sdb", 0, None, false);
 
         let disks = scan(&root);
-        fs::remove_dir_all(&root).unwrap();
 
         let names: Vec<_> = disks.iter().map(|d| d.name.as_str()).collect();
         assert_eq!(names, ["nvme0n1", "sda", "vda"]);

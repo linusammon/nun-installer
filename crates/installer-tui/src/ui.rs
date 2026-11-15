@@ -645,34 +645,13 @@ fn install_page(frame: &mut Frame, area: Rect, app: &App) {
 mod tests {
     use super::*;
     use crate::app::ChecksResult;
-    use installer_core::{Boot, Catalog, DiskInfo, Host, Reachability};
+    use installer_core::{Catalog, DiskInfo, Host, Reachability};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
     fn app() -> App {
-        let catalog = Catalog::from_sources(
-            "DE\t+5230+01322\tEurope/Berlin\n",
-            "SUPPORTED-LOCALES=\\\nen_US.UTF-8/UTF-8 \\\n",
-            "! layout\n  us  English (US)\n  ch  German (Switzerland)\n\n! variant\n  fr  ch: French (Switzerland)\n",
-        );
-        let host = Host {
-            boot: Boot::Uefi,
-            system: "x86_64-linux".into(),
-            state_version: "26.05".into(),
-            nixpkgs_url: String::new(),
-            disko_url: String::new(),
-            nixpkgs_path: None,
-            pinned_lock: None,
-        };
-        App::new(catalog, host, false, || {
-            vec![DiskInfo {
-                path: "/dev/vda".into(),
-                name: "vda".into(),
-                size_bytes: 20 << 30,
-                model: "Virtual".into(),
-                removable: false,
-                rejected: vec![],
-            }]
+        App::new(Catalog::example(), Host::example(), false, || {
+            vec![DiskInfo::example("vda")]
         })
     }
 

@@ -1000,36 +1000,20 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installer_core::{Boot, SafetyError};
+    use installer_core::SafetyError;
 
     fn catalog() -> Catalog {
-        Catalog::from_sources(
-            "DE\t+5230+01322\tEurope/Berlin\nCH\t+4723+00832\tEurope/Zurich\n",
-            "SUPPORTED-LOCALES=\\\nde_CH.UTF-8/UTF-8 \\\nen_US.UTF-8/UTF-8 \\\n",
-            "! layout\n  us  English (US)\n  ch  German (Switzerland)\n\n! variant\n  fr  ch: French (Switzerland)\n",
-        )
+        Catalog::example()
     }
 
     fn host() -> Host {
-        Host {
-            boot: Boot::Uefi,
-            system: "x86_64-linux".into(),
-            state_version: "26.05".into(),
-            nixpkgs_url: "github:NixOS/nixpkgs/nixos-unstable".into(),
-            disko_url: "github:nix-community/disko".into(),
-            nixpkgs_path: None,
-            pinned_lock: None,
-        }
+        Host::example()
     }
 
     fn disk(name: &str, rejected: Vec<SafetyError>) -> DiskInfo {
         DiskInfo {
-            path: format!("/dev/{name}").into(),
-            name: name.into(),
-            size_bytes: 20 * 1024 * 1024 * 1024,
-            model: "Test Disk".into(),
-            removable: false,
             rejected,
+            ..DiskInfo::example(name)
         }
     }
 

@@ -15,6 +15,9 @@ mod proc;
 pub mod safety;
 pub mod secret;
 pub mod tools;
+
+#[cfg(any(test, feature = "test-util"))]
+mod testing;
 pub mod validate;
 
 pub use answers::{Answers, Disk, System, User, SCHEMA_VERSION};

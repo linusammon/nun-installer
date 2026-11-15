@@ -18,6 +18,7 @@ yescrypt = "0.1"
 rustix = { version = "1", features = ["process"] }
 zeroize = "1"
 insta = "1"
+tempfile = "3"
 ratatui = "0.29"
 crossterm = "0.28"
 
