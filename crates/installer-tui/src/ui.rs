@@ -270,7 +270,7 @@ fn pick_list(
 
 fn check(ok: bool, good: &str, bad: &str) -> Line<'static> {
     if ok {
-        Line::styled(format!("[ok] {good}"), OK)
+        Line::styled(format!("[OK] {good}"), OK)
     } else {
         Line::styled(format!("[FAIL] {bad}"), FAIL)
     }
@@ -282,13 +282,11 @@ fn welcome(frame: &mut Frame, area: Rect, app: &App) {
         Boot::Bios => "BIOS",
     };
     let mut lines = vec![
-        Line::raw("Welcome to the nun installer."),
+        Line::raw("Welcome to the NUN installer."),
         Line::raw(""),
-        Line::raw(
-            "This installs NixOS with the nun stack: noctalia, noctalia-greeter and umbriel.",
-        ),
-        Line::styled(format!("Detected: {boot} boot, {}", app.host.system), DIM),
+        Line::raw("It will install NixOS with Noctalia, its Greeter as well as Umbriel."),
         Line::raw(""),
+        check(true, &format!("{boot} boot ({})", app.host.system), ""),
     ];
 
     match (&app.checks.result, app.checks.running) {
@@ -745,16 +743,28 @@ mod tests {
 
         a.on_checks(checks(true));
         let out = draw(&a);
-        assert!(out.contains("[ok] Internet access"));
-        assert!(out.contains("[ok] A usable disk was found"));
+        assert!(out.contains("[OK] Internet access"));
+        assert!(out.contains("[OK] A usable disk was found"));
+        assert!(out.contains("[OK] UEFI boot (x86_64-linux)"));
         assert!(out.contains("Press Enter to continue."));
-        assert!(out.contains("UEFI"));
 
         a.on_checks(checks(false));
         let out = draw(&a);
         assert!(out.contains("[FAIL] No internet access"));
         assert!(out.contains("github.com and cache.nixos.org"));
         assert!(out.contains("Cannot continue"));
+    }
+
+    #[test]
+    fn welcome_intro_and_bios_detection() {
+        let mut a = app();
+        a.host.boot = Boot::Bios;
+        let out = draw(&a);
+        assert!(out.contains("Welcome to the NUN installer."));
+        assert!(
+            out.contains("It will install NixOS with Noctalia, its Greeter as well as Umbriel.")
+        );
+        assert!(out.contains("[OK] BIOS boot (x86_64-linux)"));
     }
 
     #[test]
