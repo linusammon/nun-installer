@@ -332,8 +332,9 @@ pkgs.testers.runNixOSTest {
                 installer.succeed("tmux new-session -d -x 120 -y 40 -s nun 'NUN_OFFLINE=1 ${env} nun-installer'")
             wait_for("Press Enter to continue.")
             if as_user:
-                installer.succeed("ps -eo ruser,args | grep -E '^nixos +sudo env '")
+                # It was started as `nixos`, yet the installer process is root: it escalated.
                 installer.succeed("ps -eo user,args | grep -E '^root +\\S*nun-installer'")
+                installer.fail("ps -eo user,args | grep -E '^nixos +\\S*nun-installer'")
             send("Enter")
 
             # The keyboard comes first, so the searches below use the chosen layout.
