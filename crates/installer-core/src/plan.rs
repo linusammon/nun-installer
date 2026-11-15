@@ -80,6 +80,19 @@ pub struct Action {
     pub cleanup: bool,
 }
 
+/// One word of a shell command line: as is when it is plainly safe, otherwise in
+/// single quotes, so a printed command can be pasted into a shell.
+fn shell_word(s: &str) -> String {
+    let plain = !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c));
+    if plain {
+        s.to_owned()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+}
+
 impl fmt::Display for Action {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "# {}", self.description)?;
@@ -87,14 +100,15 @@ impl fmt::Display for Action {
             ActionKind::Run(c) => {
                 write!(f, "$ ")?;
                 for (k, v) in &c.env {
-                    write!(f, "{k}={v} ")?;
+                    write!(f, "{k}={} ", shell_word(v))?;
                 }
-                write!(f, "{}", c.program)?;
+                write!(f, "{}", shell_word(&c.program))?;
                 for a in &c.args {
-                    write!(f, " {a}")?;
+                    write!(f, " {}", shell_word(a))?;
                 }
                 if c.stdin.is_some() {
-                    write!(f, "   (stdin: <redacted>)")?;
+                    // A comment, so the line stays valid shell.
+                    write!(f, "  # stdin: <redacted>")?;
                 }
                 writeln!(f)
             }
@@ -115,9 +129,15 @@ impl fmt::Display for Action {
                 }
             }
             ActionKind::CreateDir { path, mode } => {
-                writeln!(f, "mkdir -m {mode:o} {}", path.display())
+                writeln!(
+                    f,
+                    "$ mkdir -m {mode:o} {}",
+                    shell_word(&path.to_string_lossy())
+                )
             }
-            ActionKind::Remove(p) => writeln!(f, "rm -rf {}", p.display()),
+            ActionKind::Remove(p) => {
+                writeln!(f, "$ rm -rf {}", shell_word(&p.to_string_lossy()))
+            }
         }
     }
 }
@@ -468,6 +488,61 @@ mod tests {
                 "the pins were made for the default URLs"
             );
         }
+    }
+
+    #[test]
+    fn printed_words_survive_a_round_trip_through_a_real_shell() {
+        let tricky = [
+            "plain",
+            "a b",
+            "it's",
+            "$HOME",
+            "x;y",
+            "",
+            "*",
+            "a\"b",
+            "nix-command flakes",
+            "--mode",
+            "destroy,format,mount",
+            "k=v w",
+        ];
+        let line = tricky
+            .iter()
+            .map(|w| shell_word(w))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let out = std::process::Command::new("sh")
+            .args(["-c", &format!("printf '%s\\n' {line}")])
+            .output()
+            .unwrap();
+        let got: Vec<_> = String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(got, tricky);
+    }
+
+    #[test]
+    fn plain_words_are_left_unquoted() {
+        assert_eq!(shell_word("destroy,format,mount"), "destroy,format,mount");
+        assert_eq!(shell_word("/mnt/etc/nixos"), "/mnt/etc/nixos");
+        assert_eq!(shell_word("--root-mountpoint"), "--root-mountpoint");
+        assert_eq!(shell_word("nixpkgs=/nix/store/x"), "nixpkgs=/nix/store/x");
+    }
+
+    #[test]
+    fn the_dry_run_command_line_is_valid_shell_with_quoting_where_needed() {
+        let p = plan_for(&answers(false));
+        let text = p.to_string();
+        assert!(
+            text.contains("$ nix --extra-experimental-features 'nix-command flakes' flake lock /mnt/etc/nixos"),
+            "{text}"
+        );
+        assert!(text.contains("# stdin: <redacted>"));
+        assert!(text.contains("$ mkdir -m 700 /run/nun-installer"));
+        assert!(text.contains("$ rm -rf /run/nun-installer"));
+        assert!(text.contains("$ NIX_PATH=nixpkgs=/nix/store/fake-nixpkgs disko "));
     }
 
     #[test]
