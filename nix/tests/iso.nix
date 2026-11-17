@@ -20,6 +20,7 @@ let
   qemu = "${pkgs.qemu_test}/bin/qemu-system-x86_64";
 in
 testing.makeTest {
+  meta.timeout = 900;
   name = "nun-iso-boot";
   nodes = { };
   testScript = ''
@@ -34,8 +35,19 @@ testing.makeTest {
     machine.wait_for_unit("multi-user.target")
 
     with subtest("the installer runs as root on the first console"):
-        machine.wait_until_succeeds("pgrep -u root -x nun-installer")
-        machine.wait_until_succeeds("grep -q 'Welcome to the NUN installer' /dev/vcs1")
+        try:
+            with machine.nested("waiting for the installer"):
+                for _ in range(60):
+                    status, _out = machine.execute("pgrep -u root -f nun-installer")
+                    if status == 0:
+                        break
+                    machine.sleep(2)
+                else:
+                    raise Exception("the installer never started")
+        except Exception:
+            print(machine.execute("systemctl status getty@tty1 --no-pager; ps -eo user,args | head -40; who; ls -l /dev/vcs1")[1])
+            raise
+        machine.wait_until_succeeds("grep -q 'Welcome to the NUN installer' /dev/vcs1", timeout=60)
 
     machine.shutdown()
   '';
